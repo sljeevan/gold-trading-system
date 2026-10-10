@@ -422,12 +422,13 @@ def get_compounding_ladder_status() -> Dict[str, Any]:
 
 @mcp.tool()
 def reset_compounding_ladder(
-    starting_balance: float = 20.0,
-    loss_policy: Literal["RESET_TO_LEVEL_1", "STEP_DOWN_BY_BALANCE", "PRESERVE_MILESTONES"] = "RESET_TO_LEVEL_1",
+    starting_balance: float = 1000.0,
+    loss_policy: Literal["RESET_TO_LEVEL_1", "STEP_DOWN_BY_BALANCE", "PRESERVE_MILESTONES", "PROGRESSIVE_RATCHET"] = "PROGRESSIVE_RATCHET",
 ) -> Dict[str, Any]:
     """
-    Reset the Compounding Ladder to Level 1 with specified capital and loss policy.
+    Reset the Compounding Ladder with specified capital and loss policy.
     Loss policies:
+        - 'PROGRESSIVE_RATCHET': Dynamic tiered floors ($150 at $250, $350 at $500, $700 at $1,000, $1,800 at $2,500)
         - 'RESET_TO_LEVEL_1': Full reset on loss (default challenge mode)
         - 'STEP_DOWN_BY_BALANCE': Fall back to the level matching current balance
         - 'PRESERVE_MILESTONES': Preserve milestone floors (Level 10: $212, Level 20: $2923)

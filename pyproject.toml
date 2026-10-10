@@ -34,3 +34,4 @@ packages = ["src/gold_trader"]
 [tool.pytest.ini_options]
 addopts = "-p no:typeguard"
 pythonpath = ["src"]
+testpaths = ["tests"]

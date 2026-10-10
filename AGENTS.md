@@ -51,11 +51,13 @@ graph TD
 
 The core quantitative scaling mechanism is managed by [`CompoundingLadderManager`](file:///home/mcpuser/MCP/gold-trading-system/src/gold_trader/core/compounding_ladder.py#L73).
 
-- **Matrix**: 30 discrete exponential levels scaling from **$20.00 micro-seed** to **$52,384.00**.
+- **Matrix**: 30 discrete exponential levels scaling from **$20.00 micro-seed** to **$52,384.00**, plus a 37-level **Noise-Adaptive Matrix** ($100 to $5,337.29).
 - **State File**: [`~/.gold_trading_data/compounding_ladder_state.json`](file:///home/mcpuser/.gold_trading_data/compounding_ladder_state.json)
-- **Active Level Specs**:
+- **Active System Capital Baseline**: **$1,000.00 Starting Capital** | Active Level: **Level 18 (Expansion Phase)** | Planned Risk: **$75.44 (8.0%)** | Target Gain: **+$113.15 (1.5R)** | Target Balance: **$1,056.10** | Protected Capital Floor: **$700.00** (`PROGRESSIVE_RATCHET`).
+- **Sample Level Specs**:
   - Level 1: $20.00 Starting Balance | Target Gain: +$6.00 (30%) | Planned Risk: $5.00 (23%) | Target: $26.00.
   - Level 10: $212.00 Starting Balance | Target Gain: +$64.00 | Planned Risk: $49.00.
+  - Level 18 (Active at $1,000): $942.95 Starting Balance | Target Gain: +$113.15 (12%) | Planned Risk: $75.44 (8%) | Target: $1,056.10.
   - Level 20: $2,923.00 Starting Balance | Target Gain: +$877.00 | Planned Risk: $672.00.
   - Level 30: $40,296.00 Starting Balance | Target Gain: +$12,089.00 | Target: $52,384.00.
 

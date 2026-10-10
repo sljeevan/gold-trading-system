@@ -607,6 +607,10 @@ class GoldAutoTrader:
 
                 tracked = self.tracked_positions.get(ticket)
                 if not tracked:
+                    initial_sl = float(sl or (open_price - 8.00 if side == "BUY" else open_price + 8.00))
+                    initial_risk_dist = max(abs(open_price - initial_sl), 8.00)
+                    calc_t1 = round(open_price + (self.config.scale_out_r * initial_risk_dist), 2) if side == "BUY" else round(open_price - (self.config.scale_out_r * initial_risk_dist), 2)
+                    calc_t2 = round(open_price + (self.config.runner_target_2_multiplier * initial_risk_dist), 2) if side == "BUY" else round(open_price - (self.config.runner_target_2_multiplier * initial_risk_dist), 2)
                     tracked = {
                         "ticket": ticket,
                         "symbol": symbol,
@@ -614,8 +618,8 @@ class GoldAutoTrader:
                         "lots": cur_lots,
                         "entry_price": open_price,
                         "stop_loss": sl,
-                        "target_1": tp,
-                        "target_2": tp,
+                        "target_1": calc_t1,
+                        "target_2": calc_t2 if (self.config.enable_runner_trailing and calc_t2) else tp,
                         "tp1_taken": 0,
                         "peak_price": open_price,
                         "partial_closed_lots": 0.0,
@@ -669,7 +673,7 @@ class GoldAutoTrader:
                     if res.get("status") == "SUCCESS":
                         tracked["stop_loss"] = new_sl
                         tracked["target_2"] = new_tp
-                        msg = f"Shifted SL to Break-Even + $0.50 (${new_sl}) for Ticket #{ticket}"
+                        msg = f"Trailed SL to Break-Even + $0.50 (${new_sl}) for Ticket #{ticket}"
                         actions_taken.append(msg)
                         if self.config.send_telegram_alerts:
                             self.notifier.send_trade_update(

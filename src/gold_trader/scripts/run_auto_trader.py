@@ -34,7 +34,8 @@ def main():
         help="Trading mode",
     )
     parser.add_argument("--interval-seconds", type=int, default=60, help="Scan interval in seconds")
-    parser.add_argument("--ladder-level", type=int, default=None, help="Set starting level (1-37) for compounding ladder (e.g. 5 for $200)")
+    parser.add_argument("--starting-capital", "--initial-capital", type=float, default=None, help="Reset or configure starting capital for compounding ladder (e.g. 1000.0)")
+    parser.add_argument("--ladder-level", type=int, default=None, help="Set starting level (1-37) for compounding ladder (e.g. 18 for $1000)")
     parser.add_argument("--min-rr", type=float, default=1.25, help="Minimum Risk-Reward ratio (e.g. 1.25 for High-Velocity Touch)")
     parser.add_argument("--risk-pct", type=float, default=10.0, help="Risk percentage per trade (e.g. 10.0 for Sprint phase)")
     parser.add_argument("--donchian-period", type=int, default=10, help="Donchian channel lookback period (default: 10)")
@@ -60,7 +61,12 @@ def main():
 
     args = parser.parse_args()
 
-    if args.ladder_level is not None:
+    if args.starting_capital is not None:
+        from gold_trader.core.compounding_ladder import CompoundingLadderManager
+        mgr = CompoundingLadderManager()
+        status = mgr.reset_ladder(starting_balance=args.starting_capital)
+        logger.info(f"🪜 Compounding Ladder reset to starting capital ${args.starting_capital:.2f} at Level {status['current_level']} (Target balance: ${status['current_balance']:.2f})")
+    elif args.ladder_level is not None:
         from gold_trader.core.compounding_ladder import CompoundingLadderManager
         mgr = CompoundingLadderManager()
         status = mgr.set_level(args.ladder_level)

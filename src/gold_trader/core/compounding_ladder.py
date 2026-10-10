@@ -606,18 +606,27 @@ class CompoundingLadderManager:
             "ladder_mode": self.ladder_mode,
         }
 
-    def reset_ladder(self, starting_balance: float = 200.0) -> Dict[str, Any]:
+    def reset_ladder(self, starting_balance: float = 1000.0, reset_stats: bool = False) -> Dict[str, Any]:
         """Manually reset the ladder with specified capital, automatically calibrating initial level."""
         mat = NOISE_ADAPTIVE_MATRIX if self.ladder_mode == "NOISE_ADAPTIVE_LADDER" else LADDER_MATRIX
         start_lvl = find_closest_level_for_balance(starting_balance, matrix=mat)
         self.state["current_level"] = start_lvl
+        self.state["peak_level"] = max(self.state.get("peak_level", 1), start_lvl)
         self.state["starting_balance"] = starting_balance
         self.state["current_balance"] = starting_balance
         self.state["peak_balance"] = starting_balance
         self.state["ratchet_floor"] = 0.0
         self.state["consecutive_wins"] = 0
         self.state["consecutive_losses"] = 0
+        if reset_stats:
+            self.state["total_trades"] = 0
+            self.state["wins"] = 0
+            self.state["losses"] = 0
+            self.state["scratches"] = 0
+            self.state["reloads"] = 0
+            self.state["history"] = []
         self.state["status"] = "ACTIVE"
+        self.update_ratchet_floor()
         self._save_state()
         return self.get_status()
 

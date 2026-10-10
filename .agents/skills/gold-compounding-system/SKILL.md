@@ -41,7 +41,14 @@ To set a specific level:
 ```bash
 python3 -c "
 from gold_trader.core.compounding_ladder import CompoundingLadderManager
-CompoundingLadderManager().set_level(5)
+CompoundingLadderManager().set_level(18)
+"
+```
+To reset ladder to $1,000 initial capital:
+```bash
+python3 -c "
+from gold_trader.core.compounding_ladder import CompoundingLadderManager
+CompoundingLadderManager().reset_ladder(starting_balance=1000.0, reset_stats=True)
 "
 ```
 To switch archetype (e.g. to Noise-Adaptive Ladder, High-Watermark Surplus Ratchet, or Tiered Sprint):

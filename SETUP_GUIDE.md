@@ -172,7 +172,23 @@ Total Banked Wealth            | $104,975.00            | $104,961.00
 
 ## 5. Live Infrastructure & Operational Runbook
 
-### Service Configuration
+### 5.1 Portable XM MT5 Setup (New Server Setup)
+
+To set up XM MT5 on a new Linux server with Wine:
+
+**Automated Setup Script:**
+```bash
+# Automatically downloads mt5.zip from GitHub Release and extracts into Wine Program Files
+bash scripts/setup_mt5.sh
+```
+
+**Direct Manual Download:**
+```bash
+curl -L -O https://github.com/sljeevan/gold-trading-system/releases/download/v1.0.0/mt5.zip
+unzip -q -o mt5.zip -d "$HOME/.wine/drive_c/Program Files"
+```
+
+### 5.2 Service Configuration
 
 The system runs as two isolated, interdependent `systemd` user services:
 

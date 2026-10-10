@@ -77,14 +77,14 @@ class TestCompoundingLadderAndML(unittest.TestCase):
         ladder = CompoundingLadderManager(state_file=self.temp_file.name)
         ladder.reset_ladder(20.0)
 
-        buy_order = ladder.calculate_bracket_order(2700.0, "BUY")
+        buy_order = ladder.calculate_bracket_order(2700.0, "BUY", use_atr_stops=False)
         self.assertEqual(buy_order["lots"], 0.03)
         self.assertEqual(buy_order["take_profit"], 2702.0)  # +$2.00 (+20 pips)
         self.assertEqual(buy_order["stop_loss"], 2698.5)   # -$1.50 (-15 pips)
         self.assertEqual(buy_order["expected_profit_usd"], 6.0)
         self.assertEqual(buy_order["expected_loss_usd"], 4.5)
 
-        sell_order = ladder.calculate_bracket_order(2700.0, "SELL")
+        sell_order = ladder.calculate_bracket_order(2700.0, "SELL", use_atr_stops=False)
         self.assertEqual(sell_order["take_profit"], 2698.0)
         self.assertEqual(sell_order["stop_loss"], 2701.5)
 
