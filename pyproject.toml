@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gold-trading-system"
+version = "0.1.0"
+description = "Institutional Gold Trading System (Spot XAU/USD, COMEX Futures, Gold ETFs) with Multi-Timeframe Signals, Multi-Agent Confluence, and XM Broker MT5/MetaAPI Integration"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+    "yfinance>=0.2.35",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+mt5 = [
+    "MetaTrader5>=5.0.45; platform_system == 'Windows'",
+]
+metaapi = [
+    "metaapi-cloud-sdk>=25.0.0",
+]
+dev = [
+    "pytest>=7.4.0",
+]
+
+[project.scripts]
+gold-mcp = "gold_trader.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gold_trader"]
+
+[tool.pytest.ini_options]
+addopts = "-p no:typeguard"
+pythonpath = ["src"]

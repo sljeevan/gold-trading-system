@@ -1,0 +1,848 @@
+"""
+Automated Live Market Scanner & Risk-Reward Trade Execution Engine for Gold.
+Continuously scans multi-timeframe candles, evaluates institutional confluences,
+calculates strict R:R setups, and executes trades on XM MT5 / Paper Broker with dynamic trade management
+and real-time Telegram notifications.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sqlite3
+import time
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional
+
+from gold_trader.brokers.base import BaseBroker
+from gold_trader.brokers.socket_broker import SocketBroker
+from gold_trader.config import config
+from gold_trader.core.compounding_ladder import CompoundingLadderManager
+from gold_trader.core.data_feed import fetch_gold_candles, get_live_gold_snapshot
+from gold_trader.core.strategy_engine import (
+    calculate_lot_size,
+    generate_compounding_ladder_setup,
+    generate_donchian_breakout_setup,
+    generate_donchian_momentum_hybrid_setup,
+    generate_gold_trade_setup,
+)
+from gold_trader.core.telegram_notifier import TelegramNotifier
+
+logger = logging.getLogger("GoldAutoTrader")
+
+
+@dataclass
+class AutoTraderConfig:
+    symbol: str = "XAUUSD"
+    timeframe: str = "1h"
+    mode: Literal[
+        "COMPOUNDING_LADDER",
+        "COMPOUNDING_HYBRID",
+        "COMPOUNDING_TOUCH",
+        "STANDARD_SWING",
+        "DONCHIAN_BREAKOUT",
+        "DONCHIAN_MOMENTUM_HYBRID",
+    ] = "COMPOUNDING_TOUCH"
+    risk_pct_per_trade: float = 1.0
+    min_risk_reward: float = 1.25
+    min_quality_score: int = 80
+    max_open_positions: int = 2
+    max_spread_pips: float = 4.0
+    scan_interval_seconds: int = 60
+    auto_execute: bool = True
+    trail_to_breakeven_at_t1: bool = True
+    send_telegram_alerts: bool = True
+    one_trade_per_bar: bool = True
+    loss_cooldown_minutes: int = 60
+    use_pullback_limit: bool = True
+    pullback_discount_pips: float = 8.0
+    max_daily_trades: int = 4
+    session_filter: bool = True
+    session_start_hour_utc: int = 7
+    session_end_hour_utc: int = 19
+    donchian_period: int = 10
+    trend_filter_ema: int = 50
+    trigger_mode: str = "TOUCH"
+    enable_partial_scale_out: bool = True
+    partial_scale_out_pct: float = 0.50
+    scale_out_r: float = 1.00
+    enable_runner_trailing: bool = True
+    runner_trail_buffer_usd: float = 6.00
+    runner_target_2_multiplier: float = 2.50
+
+
+
+class GoldAutoTrader:
+    """
+    Autonomous 24/7 Gold Trading Scanner, Execution Controller & Telegram Reporter.
+    """
+
+    def __init__(
+        self,
+        broker: Optional[BaseBroker] = None,
+        config_override: Optional[AutoTraderConfig] = None,
+        notifier: Optional[TelegramNotifier] = None,
+        db_path: Optional[str] = None,
+    ):
+        self.config = config_override or AutoTraderConfig()
+        self.broker = broker or SocketBroker()
+        self.notifier = notifier or TelegramNotifier()
+        self.db_path = os.path.expanduser(db_path or "~/.gold_trading_data/auto_trader.db")
+        self._ensure_db()
+        self.is_running = False
+        self._load_active_tracked_positions()
+        self.last_trade_bar: Optional[str] = self._get_state("last_trade_bar")
+        cooldown_str = self._get_state("cooldown_until_ts")
+        self.cooldown_until: Optional[float] = float(cooldown_str) if cooldown_str else None
+
+    def _ensure_db(self):
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scan_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    bias TEXT NOT NULL,
+                    setup_name TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    quality_score INTEGER NOT NULL,
+                    rr_ratio REAL NOT NULL,
+                    decision TEXT NOT NULL,
+                    details_json TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trade_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    ticket TEXT NOT NULL UNIQUE,
+                    symbol TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    lots REAL NOT NULL,
+                    entry_price REAL NOT NULL,
+                    stop_loss REAL,
+                    target_1 REAL,
+                    target_2 REAL,
+                    rr_ratio REAL,
+                    status TEXT NOT NULL,
+                    close_price REAL,
+                    pnl REAL,
+                    close_time TEXT,
+                    comment TEXT
+                )
+            """)
+            # Ensure tracking columns exist in existing database
+            try:
+                cur = conn.cursor()
+                cols = [r[1] for r in cur.execute("PRAGMA table_info(trade_executions)").fetchall()]
+                if "comment" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN comment TEXT")
+                if "tp1_taken" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN tp1_taken INTEGER DEFAULT 0")
+                if "peak_price" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN peak_price REAL")
+                if "partial_closed_lots" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN partial_closed_lots REAL DEFAULT 0.0")
+                if "partial_realized_usd" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN partial_realized_usd REAL DEFAULT 0.0")
+                conn.commit()
+            except Exception as e:
+                logger.debug("Table migration note: %s", e)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS engine_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            conn.commit()
+
+    def _save_state(self, key: str, value: str):
+        """Persist engine control state to database."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO engine_state (key, value) VALUES (?, ?)",
+                    (key, value)
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error("Failed to save engine state %s: %s", key, e)
+
+    def _get_state(self, key: str) -> Optional[str]:
+        """Retrieve engine control state from database."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cur = conn.cursor()
+                row = cur.execute("SELECT value FROM engine_state WHERE key = ?", (key,)).fetchone()
+                return str(row[0]) if row else None
+        except Exception:
+            return None
+
+    def _load_active_tracked_positions(self):
+        """Load currently open tracked trades into memory."""
+        self.tracked_positions: Dict[str, Dict[str, Any]] = {}
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM trade_executions WHERE status = 'OPEN'")
+                for row in cur.fetchall():
+                    d = dict(row)
+                    self.tracked_positions[str(d["ticket"])] = d
+        except Exception as e:
+            logger.error("Error loading tracked positions: %s", e)
+
+    def log_scan(
+        self,
+        symbol: str,
+        price: float,
+        bias: str,
+        setup_name: str,
+        action: str,
+        quality_score: int,
+        rr_ratio: float,
+        decision: str,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        now_str = datetime.now(timezone.utc).isoformat()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO scan_logs 
+                    (timestamp, symbol, price, bias, setup_name, action, quality_score, rr_ratio, decision, details_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (now_str, symbol, price, bias, setup_name, action, quality_score, rr_ratio, decision, json.dumps(details or {})),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error("Failed to write scan log: %s", e)
+
+    def evaluate_and_trade(self) -> Dict[str, Any]:
+        """
+        Execute one complete analysis, position monitoring, and automated trading cycle.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        symbol = self.config.symbol
+        
+        # 1. Check account state & open positions
+        try:
+            acct = self.broker.get_account_info()
+            balance = float(acct.get("balance", 10000.0))
+            if balance <= 0:
+                balance = 10000.0
+        except Exception as e:
+            balance = 10000.0
+
+        try:
+            open_positions = self.broker.get_open_positions()
+        except Exception as e:
+            open_positions = []
+
+        try:
+            pending_orders = self.broker.get_pending_orders()
+        except Exception as e:
+            pending_orders = []
+
+        # 2. Check for Closed Positions (Exit Alert Detection)
+        self._detect_and_notify_exits(open_positions, current_balance=balance)
+
+        # 3. Manage existing open positions (Trailing SL / Breakeven)
+        managed_actions = self._manage_open_positions(open_positions)
+
+        # 4. Generate Trade Setup based on mode
+        if self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH"):
+            is_touch = (self.config.mode == "COMPOUNDING_TOUCH")
+            is_hybrid = (self.config.mode in ("COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH") or self.config.timeframe == "1h")
+            tf = "1h" if is_hybrid else self.config.timeframe
+            strat_mode = "HIGH_VELOCITY_TOUCH_1H" if (is_touch or is_hybrid) else "VALUE_ZONE_15M"
+            setup = generate_compounding_ladder_setup(
+                symbol=symbol,
+                timeframe=tf,
+                min_win_probability=0.50,
+                use_pullback_limit=self.config.use_pullback_limit if not is_hybrid else False,
+                pullback_discount_pips=self.config.pullback_discount_pips if not is_hybrid else 0.0,
+                strategy_mode=strat_mode,
+                donchian_period=self.config.donchian_period,
+                rr_multiplier=self.config.min_risk_reward,
+                trend_filter_ema=self.config.trend_filter_ema,
+                trigger_mode=self.config.trigger_mode,
+            )
+            if "error" in setup:
+                self.log_scan(symbol, 0.0, "ERROR", "None", "HOLD", 0, 0.0, f"Error: {setup.get('error')}", setup)
+                return {"status": "ERROR", "message": setup.get("error"), "timestamp": now}
+
+            order_type = str(setup.get("order_type", "MARKET" if is_hybrid else ("LIMIT" if self.config.use_pullback_limit else "MARKET")))
+            price = float(setup.get("entry_price", setup.get("market_price", 0.0)))
+            bias = str(setup.get("bias", "NEUTRAL"))
+            default_name = "1H Donchian 10 Touch High-Velocity Compounding" if is_touch else ("1H Donchian + Momentum Hybrid Compounding" if is_hybrid else "Compounding Ladder Setup")
+            setup_name = str(setup.get("setup_name", default_name))
+            action = str(setup.get("action", "HOLD"))
+            quality_score = 95 if action in ("BUY", "SELL") else 50
+            rr_t1 = float(setup.get("reward_risk_ratio", self.config.min_risk_reward))
+            suggested_lots = float(setup.get("lots", 0.01))
+            sl = setup.get("stop_loss")
+            tp1 = setup.get("take_profit")
+            tp2 = tp1
+            level = setup.get("level", 1)
+        elif self.config.mode in ("DONCHIAN_MOMENTUM_HYBRID", "HYBRID"):
+            order_type = "MARKET"
+            setup = generate_donchian_momentum_hybrid_setup(
+                symbol=symbol,
+                account_balance=balance,
+                risk_pct=self.config.risk_pct_per_trade,
+                timeframe=self.config.timeframe,
+            )
+            if "error" in setup:
+                self.log_scan(symbol, 0.0, "ERROR", "None", "HOLD", 0, 0.0, f"Error: {setup.get('error')}", setup)
+                return {"status": "ERROR", "message": setup.get("error"), "timestamp": now}
+
+            price = float(setup.get("entry_price", 0.0))
+            bias = str(setup.get("bias", "NEUTRAL"))
+            setup_name = str(setup.get("setup_name", "Donchian Momentum Hybrid"))
+            action = str(setup.get("action", "HOLD"))
+            quality_score = int(setup.get("quality_score", 0))
+            rr_t1 = float(setup.get("risk_reward_t1", 1.8))
+            suggested_lots = float(setup.get("suggested_lot_size", 0.01))
+            sl = setup.get("stop_loss")
+            tp1 = setup.get("target_1")
+            tp2 = setup.get("target_2")
+            level = 1
+        elif self.config.mode == "DONCHIAN_BREAKOUT":
+            order_type = "MARKET"
+            setup = generate_donchian_breakout_setup(
+                symbol=symbol,
+                account_balance=balance,
+                risk_pct=self.config.risk_pct_per_trade,
+                timeframe=self.config.timeframe,
+            )
+            if "error" in setup:
+                self.log_scan(symbol, 0.0, "ERROR", "None", "HOLD", 0, 0.0, f"Error: {setup.get('error')}", setup)
+                return {"status": "ERROR", "message": setup.get("error"), "timestamp": now}
+
+            price = float(setup.get("entry_price", 0.0))
+            bias = str(setup.get("bias", "NEUTRAL"))
+            setup_name = str(setup.get("setup_name", "Donchian Breakout"))
+            action = str(setup.get("action", "HOLD"))
+            quality_score = int(setup.get("quality_score", 0))
+            rr_t1 = float(setup.get("risk_reward_t1", 1.2))
+            suggested_lots = float(setup.get("suggested_lot_size", 0.01))
+            sl = setup.get("stop_loss")
+            tp1 = setup.get("target_1")
+            tp2 = setup.get("target_2")
+            level = 1
+        else:
+            order_type = "MARKET"
+            setup = generate_gold_trade_setup(
+                symbol=symbol,
+                account_balance=balance,
+                risk_pct=self.config.risk_pct_per_trade,
+                timeframe=self.config.timeframe,
+            )
+            if "error" in setup:
+                self.log_scan(symbol, 0.0, "ERROR", "None", "HOLD", 0, 0.0, f"Error: {setup.get('error')}", setup)
+                return {"status": "ERROR", "message": setup.get("error"), "timestamp": now}
+
+            price = float(setup.get("entry_price", 0.0))
+            bias = str(setup.get("bias", "NEUTRAL"))
+            setup_name = str(setup.get("setup_name", "None"))
+            action = str(setup.get("action", "HOLD"))
+            quality_score = int(setup.get("quality_score", 0))
+            rr_t1 = float(setup.get("risk_reward_t1", 1.0))
+            suggested_lots = float(setup.get("suggested_lot_size", 0.01))
+            sl = setup.get("stop_loss")
+            tp1 = setup.get("target_1")
+            tp2 = setup.get("target_2")
+            level = 1
+
+        # Clean up stale pending limit orders if candle has advanced
+        candle_time = setup.get("candle_time")
+        if pending_orders and candle_time:
+            for po in pending_orders:
+                po_ticket = str(po.get("ticket"))
+                po_comment = str(po.get("comment", ""))
+                if ("Compounding" in po_comment or "AI-Auto" in po_comment) and self.last_trade_bar and str(candle_time) != self.last_trade_bar:
+                    self.broker.cancel_order(po_ticket)
+                    logger.info(f"🧹 Cancelled unfilled pending limit order #{po_ticket} as candle advanced to {candle_time}.")
+
+        # 5. Apply Risk-to-Reward & Quality Gates
+        rejection_reasons = []
+
+        if action == "HOLD":
+            rejection_reasons.append("No actionable trigger pattern detected.")
+
+        if quality_score < self.config.min_quality_score:
+            rejection_reasons.append(f"Quality score {quality_score} < minimum {self.config.min_quality_score}.")
+
+        if rr_t1 < self.config.min_risk_reward:
+            rejection_reasons.append(f"R:R ratio {rr_t1:.2f} < minimum {self.config.min_risk_reward:.2f}.")
+
+        active_exposure = len(open_positions) + len(pending_orders)
+        if active_exposure >= self.config.max_open_positions:
+            rejection_reasons.append(f"Max active exposure reached ({len(open_positions)} open, {len(pending_orders)} pending >= {self.config.max_open_positions}).")
+
+        # Check if we already have an open position in the same direction
+        same_direction = [p for p in open_positions if p.get("side") == action and p.get("symbol") in (symbol, "GOLD", "GOLDmicro", "XAUUSD")]
+        if same_direction:
+            rejection_reasons.append(f"Position already open in direction {action} (Ticket #{same_direction[0].get('ticket')}).")
+
+        # Check Bar Lock (Max 1 trade per 15m candle bar)
+        if self.config.one_trade_per_bar and candle_time:
+            if self.last_trade_bar == str(candle_time):
+                rejection_reasons.append(f"Bar Lock: Trade already executed on 15m candle [{candle_time}]. Awaiting next fresh candle.")
+
+        # Check Loss Cooldown (Pause after stop-loss to avoid chop whipsaws)
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if self.cooldown_until and now_ts < self.cooldown_until:
+            rem_mins = int((self.cooldown_until - now_ts) / 60) + 1
+            rejection_reasons.append(f"Loss Cooldown: Pausing entries for {rem_mins}m to prevent chop whipsaw.")
+
+        # Check Weekend / Session Filter (Restrict entries to active market and liquid London/NY hours)
+        now_dt = datetime.now(timezone.utc)
+        if self.config.session_filter:
+            is_weekend = now_dt.weekday() == 5 or (now_dt.weekday() == 6 and now_dt.hour < 22)
+            if is_weekend:
+                rejection_reasons.append("Market Closed: Weekend hours (Gold market reopens Sunday 22:05 UTC).")
+            elif not (self.config.session_start_hour_utc <= now_dt.hour < self.config.session_end_hour_utc):
+                rejection_reasons.append(
+                    f"Session Filter: Current time {now_dt.strftime('%H:%M UTC')} is outside liquid London/NY hours "
+                    f"({self.config.session_start_hour_utc:02d}:00 - {self.config.session_end_hour_utc:02d}:00 UTC). Avoiding Asian chop."
+                )
+
+        # Check Daily Trade Cap (Max daily trades to preserve capital)
+        today_date_str = now_dt.strftime("%Y-%m-%d")
+        daily_trades_count = 0
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cur = conn.cursor()
+                row = cur.execute(
+                    "SELECT COUNT(*) FROM trade_executions WHERE (timestamp LIKE ? OR close_time LIKE ?)",
+                    (f"{today_date_str}%", f"{today_date_str}%"),
+                ).fetchone()
+                daily_trades_count = row[0] if row else 0
+        except Exception as e:
+            logger.debug("Failed to query daily trade count: %s", e)
+
+        if self.config.max_daily_trades > 0 and daily_trades_count >= self.config.max_daily_trades:
+            rejection_reasons.append(
+                f"Daily Trade Cap Reached: {daily_trades_count} trades executed today >= max {self.config.max_daily_trades}. Capital preserved."
+            )
+
+        # 6. Make Final Decision & Execute
+        if rejection_reasons:
+            decision = f"SKIP: {'; '.join(rejection_reasons)}"
+            order_result = None
+        else:
+            decision = f"EXECUTE: Favourable {action} Setup on {setup_name} ({order_type} @ ${price:.2f}, RR {rr_t1:.2f} >= {self.config.min_risk_reward:.2f})"
+            if self.config.auto_execute:
+                try:
+                    # Calibrate SL and TP to live broker quotes only for MARKET execution
+                    if order_type == "MARKET":
+                        try:
+                            sym_info = self.broker.get_symbol_info(symbol)
+                            if sym_info and sym_info.get("status") == "SUCCESS":
+                                b_bid = float(sym_info.get("bid", 0.0))
+                                b_ask = float(sym_info.get("ask", 0.0))
+                                broker_entry = b_ask if action == "BUY" else b_bid
+                                if broker_entry > 0:
+                                    sl_dist = abs(price - sl) if sl else 1.50
+                                    tp_dist = abs(tp1 - price) if tp1 else 2.00
+                                    price = broker_entry
+                                    if action == "BUY":
+                                        sl = round(broker_entry - sl_dist, 2)
+                                        tp1 = round(broker_entry + tp_dist, 2)
+                                    else:
+                                        sl = round(broker_entry + sl_dist, 2)
+                                        tp1 = round(broker_entry - tp_dist, 2)
+                                    tp2 = tp1
+                        except Exception as cal_err:
+                            logger.debug("Broker price calibration: %s", cal_err)
+                    else:
+                        # For LIMIT execution: keep precise 8-pip pullback discount and calculated SL/TP
+                        price = round(price, 2)
+                        if sl is not None:
+                            sl = round(float(sl), 2)
+                        if tp1 is not None:
+                            tp1 = round(float(tp1), 2)
+                            tp2 = tp1
+
+                    order_comment = (
+                        f"AI-Compounding-L{level}"
+                        if self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH")
+                        else f"AI-Auto-{setup_name[:12]}"
+                    )
+                    actual_tp = tp2 if (self.config.enable_partial_scale_out or self.config.enable_runner_trailing or self.config.mode in ("DONCHIAN_BREAKOUT", "DONCHIAN_MOMENTUM_HYBRID", "HYBRID")) and tp2 else tp1
+                    order_result = self.broker.place_order(
+                        symbol="GOLD" if "GOLD" in symbol else symbol,
+                        side=action,  # type: ignore
+                        lots=suggested_lots,
+                        sl=sl,
+                        tp=actual_tp,
+                        comment=order_comment,
+                        price=price if order_type == "LIMIT" else None,
+                        order_type="LIMIT" if order_type == "LIMIT" else "MARKET",
+                    )
+                    # Record to trade executions database & send Telegram alert
+                    if order_result.get("status") == "SUCCESS":
+                        ticket = str(order_result.get("ticket"))
+                        filled_price = float(order_result.get("price", price))
+                        
+                        if candle_time:
+                            self.last_trade_bar = str(candle_time)
+                            self._save_state("last_trade_bar", str(candle_time))
+                            logger.info(f"🔒 Bar Lock engaged for 15m candle bar: {candle_time}")
+                        
+                        trade_record = {
+                            "ticket": ticket,
+                            "symbol": symbol,
+                            "action": action,
+                            "lots": suggested_lots,
+                            "entry_price": filled_price,
+                            "stop_loss": sl,
+                            "target_1": tp1,
+                            "target_2": tp2,
+                            "rr_ratio": rr_t1,
+                            "comment": order_comment,
+                            "status": "PENDING" if order_type == "LIMIT" else "OPEN",
+                            "timestamp": now,
+                            "tp1_taken": 0,
+                            "peak_price": filled_price,
+                            "partial_closed_lots": 0.0,
+                            "partial_realized_usd": 0.0,
+                        }
+                        
+                        with sqlite3.connect(self.db_path) as conn:
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO trade_executions
+                                (timestamp, ticket, symbol, action, lots, entry_price, stop_loss, target_1, target_2, rr_ratio, status, comment, tp1_taken, peak_price, partial_closed_lots, partial_realized_usd)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (now, ticket, symbol, action, suggested_lots, filled_price, sl, tp1, tp2, rr_t1, "OPEN", order_comment, 0, filled_price, 0.0, 0.0),
+                            )
+                            conn.commit()
+
+                        self.tracked_positions[ticket] = trade_record
+
+                        if self.config.send_telegram_alerts:
+                            self.notifier.send_trade_entry(order=order_result, setup=setup)
+                except Exception as e:
+                    order_result = {"status": "ERROR", "message": f"Execution failed: {e}"}
+            else:
+                order_result = {"status": "DRY_RUN", "message": "Signal identified but auto_execute=False"}
+
+        self.log_scan(
+            symbol=symbol,
+            price=price,
+            bias=bias,
+            setup_name=setup_name,
+            action=action,
+            quality_score=quality_score,
+            rr_ratio=rr_t1,
+            decision=decision,
+            details=setup,
+        )
+
+        # Check and send Daily Post-Session Report if hour >= 21 UTC and not yet sent today
+        now_dt = datetime.now(timezone.utc)
+        today_date_str = now_dt.strftime("%Y-%m-%d")
+        if now_dt.hour >= 21 and self._get_state("daily_report_date") != today_date_str:
+            try:
+                import subprocess
+                subprocess.Popen(
+                    ["/usr/bin/python3", "/home/mcpuser/MCP/gold-trading-system/scripts/send_daily_report.py"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                self._save_state("daily_report_date", today_date_str)
+                logger.info(f"📊 Dispatched daily session report for {today_date_str}")
+            except Exception as dr_err:
+                logger.error(f"Failed to trigger daily report: {dr_err}")
+
+        return {
+            "timestamp": now,
+            "symbol": symbol,
+            "current_price": price,
+            "bias": bias,
+            "setup_name": setup_name,
+            "action": action,
+            "quality_score": quality_score,
+            "risk_reward_ratio": rr_t1,
+            "suggested_lots": suggested_lots,
+            "stop_loss": sl,
+            "target_1": tp1,
+            "target_2": tp2,
+            "decision": decision,
+            "open_positions_count": len(open_positions),
+            "order_result": order_result,
+            "managed_actions": managed_actions,
+        }
+
+    def _manage_open_positions(self, open_positions: List[Dict[str, Any]]) -> List[str]:
+        """
+        Institutional Two-Stage Position Management:
+        1. Stage 1: Scale out 50% volume at Target 1 (+1.0R) into realized cash.
+        2. Stage 2: Move remaining SL to Break-Even + $0.50 (Risk-Free Runner).
+        3. Stage 3: Trail runner with wide $6.00 ATR-cleared buffer behind peak excursion up to Target 2.
+        """
+        actions_taken = []
+        if not self.config.trail_to_breakeven_at_t1:
+            return actions_taken
+
+        for p in open_positions:
+            try:
+                ticket = str(p.get("ticket"))
+                open_price = float(p.get("open_price", 0.0))
+                current_price = float(p.get("current_price", 0.0))
+                cur_lots = float(p.get("lots", 0.01))
+                sl = p.get("sl")
+                tp = p.get("tp")
+                side = str(p.get("side", "BUY")).upper()
+                symbol = str(p.get("symbol", self.config.symbol))
+
+                tracked = self.tracked_positions.get(ticket)
+                if not tracked:
+                    tracked = {
+                        "ticket": ticket,
+                        "symbol": symbol,
+                        "action": side,
+                        "lots": cur_lots,
+                        "entry_price": open_price,
+                        "stop_loss": sl,
+                        "target_1": tp,
+                        "target_2": tp,
+                        "tp1_taken": 0,
+                        "peak_price": open_price,
+                        "partial_closed_lots": 0.0,
+                        "partial_realized_usd": 0.0,
+                    }
+                    self.tracked_positions[ticket] = tracked
+
+                # Track peak price excursion
+                if side == "BUY":
+                    peak_price = max(float(tracked.get("peak_price") or open_price), current_price)
+                else:
+                    peak_price = min(float(tracked.get("peak_price") or open_price), current_price)
+                tracked["peak_price"] = peak_price
+
+                # Determine initial risk and R-multiple targets
+                initial_sl = float(tracked.get("stop_loss") or sl or (open_price - 8.00 if side == "BUY" else open_price + 8.00))
+                initial_risk_dist = max(abs(open_price - initial_sl), 8.00)
+                target_1 = float(tracked.get("target_1") or (open_price + (self.config.scale_out_r * initial_risk_dist) if side == "BUY" else open_price - (self.config.scale_out_r * initial_risk_dist)))
+                target_2 = float(tracked.get("target_2") or (open_price + (self.config.runner_target_2_multiplier * initial_risk_dist) if side == "BUY" else open_price - (self.config.runner_target_2_multiplier * initial_risk_dist)))
+                tp1_taken = bool(tracked.get("tp1_taken", 0))
+
+                # -------------------------------------------------------------
+                # STAGE 1 & 2: Target 1 Reached (+1.0R) -> 50% Scale-Out + Move SL to BE + $0.50
+                # -------------------------------------------------------------
+                hit_tp1 = (current_price >= target_1) if side == "BUY" else (current_price <= target_1)
+                if hit_tp1 and not tp1_taken:
+                    if cur_lots >= 0.02 and self.config.enable_partial_scale_out:
+                        close_lots = round(cur_lots * self.config.partial_scale_out_pct, 2)
+                        close_res = self.broker.close_position(ticket=ticket, lots=close_lots)
+                        if close_res.get("status") == "SUCCESS":
+                            realized_usd = round(abs(current_price - open_price) * close_lots * 100.0, 2)
+                            tracked["partial_closed_lots"] = close_lots
+                            tracked["partial_realized_usd"] = realized_usd
+                            msg = f"🏆 Scaled out {close_lots} lots (+$ {realized_usd:.2f}) at Target 1 for Ticket #{ticket}"
+                            actions_taken.append(msg)
+                            logger.info(msg)
+                            if self.config.send_telegram_alerts:
+                                self.notifier.send_trade_update(
+                                    ticket=ticket,
+                                    symbol=symbol,
+                                    update_type="Target 1 Hit! 50% Scaled Out 💰",
+                                    details=f"Price hit Target 1 (${target_1:.2f}). Scaled out {close_lots} lots. Banked +${realized_usd:.2f} guaranteed cash.",
+                                )
+
+                    tracked["tp1_taken"] = 1
+
+                    # Shift remaining volume to Break-Even + $0.50 (Risk-Free Runner)
+                    new_sl = round(open_price + 0.50, 2) if side == "BUY" else round(open_price - 0.50, 2)
+                    new_tp = target_2 if (self.config.enable_runner_trailing and target_2) else p.get("tp")
+                    res = self.broker.modify_position(ticket=ticket, sl=new_sl, tp=new_tp)
+                    if res.get("status") == "SUCCESS":
+                        tracked["stop_loss"] = new_sl
+                        tracked["target_2"] = new_tp
+                        msg = f"Shifted SL to Break-Even + $0.50 (${new_sl}) for Ticket #{ticket}"
+                        actions_taken.append(msg)
+                        if self.config.send_telegram_alerts:
+                            self.notifier.send_trade_update(
+                                ticket=ticket,
+                                symbol=symbol,
+                                update_type="Risk-Free Runner Activated 🛡️",
+                                details=f"Stop-Loss adjusted to ${new_sl:.2f} (Break-Even + spread). Remaining runner trailing toward Target 2 (${new_tp:.2f}).",
+                            )
+
+                # -------------------------------------------------------------
+                # STAGE 3: Dynamic Runner Trailing with Wide Buffer ($6.00)
+                # -------------------------------------------------------------
+                elif tracked.get("tp1_taken", 0) and self.config.enable_runner_trailing:
+                    trail_buffer = self.config.runner_trail_buffer_usd
+                    current_sl_val = float(sl) if sl is not None else (open_price + 0.50 if side == "BUY" else open_price - 0.50)
+
+                    if side == "BUY":
+                        trailed_sl = round(peak_price - trail_buffer, 2)
+                        if trailed_sl >= current_sl_val + 0.50 and trailed_sl >= open_price + 0.50:
+                            res = self.broker.modify_position(ticket=ticket, sl=trailed_sl, tp=p.get("tp"))
+                            if res.get("status") == "SUCCESS":
+                                tracked["stop_loss"] = trailed_sl
+                                msg = f"Trailed Runner SL to ${trailed_sl} for Ticket #{ticket}"
+                                actions_taken.append(msg)
+                                if self.config.send_telegram_alerts:
+                                    self.notifier.send_trade_update(
+                                        ticket=ticket,
+                                        symbol=symbol,
+                                        update_type="Runner Trailing SL Advanced 🏃",
+                                        details=f"Peak reached ${peak_price:.2f}. Trailed Stop-Loss advanced to ${trailed_sl:.2f} (+$ {trailed_sl - open_price:.2f} profit locked).",
+                                    )
+                    else:  # SELL
+                        trailed_sl = round(peak_price + trail_buffer, 2)
+                        if trailed_sl <= current_sl_val - 0.50 and trailed_sl <= open_price - 0.50:
+                            res = self.broker.modify_position(ticket=ticket, sl=trailed_sl, tp=p.get("tp"))
+                            if res.get("status") == "SUCCESS":
+                                tracked["stop_loss"] = trailed_sl
+                                msg = f"Trailed Runner SL to ${trailed_sl} for Ticket #{ticket}"
+                                actions_taken.append(msg)
+                                if self.config.send_telegram_alerts:
+                                    self.notifier.send_trade_update(
+                                        ticket=ticket,
+                                        symbol=symbol,
+                                        update_type="Runner Trailing SL Advanced 🏃",
+                                        details=f"Peak dropped to ${peak_price:.2f}. Trailed Stop-Loss advanced to ${trailed_sl:.2f} (+$ {open_price - trailed_sl:.2f} profit locked).",
+                                    )
+
+                # Persist updated tracking state to database
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute(
+                        """
+                        UPDATE trade_executions 
+                        SET stop_loss = ?, tp1_taken = ?, peak_price = ?, partial_closed_lots = ?, partial_realized_usd = ?
+                        WHERE ticket = ?
+                        """,
+                        (tracked.get("stop_loss"), int(tracked.get("tp1_taken", 0)), float(tracked.get("peak_price", open_price)), float(tracked.get("partial_closed_lots", 0.0)), float(tracked.get("partial_realized_usd", 0.0)), ticket),
+                    )
+                    conn.commit()
+
+            except Exception as e:
+                logger.error("Error managing position %s: %s", p, e)
+
+        return actions_taken
+
+    def _detect_and_notify_exits(self, current_open_positions: List[Dict[str, Any]], current_balance: float):
+        """
+        Detect closed positions by comparing active broker positions against tracked positions,
+        and send Telegram Exit notifications with detailed PnL.
+        """
+        current_tickets = {str(p.get("ticket")) for p in current_open_positions}
+        closed_tickets = [t for t in self.tracked_positions.keys() if t not in current_tickets]
+        now_str = datetime.now(timezone.utc).isoformat()
+
+        for ticket in closed_tickets:
+            trade = self.tracked_positions.pop(ticket, None)
+            if not trade:
+                continue
+
+            symbol = trade.get("symbol", "XAUUSD")
+            side = trade.get("action", "BUY")
+            entry_price = float(trade.get("entry_price", 0.0))
+            lots = float(trade.get("lots", 0.01))
+            comment = str(trade.get("comment", ""))
+            
+            # Fetch accurate exit price via live broker quote
+            try:
+                sym_info = self.broker.get_symbol_info(symbol)
+                if sym_info and sym_info.get("status") == "SUCCESS":
+                    close_price = float(sym_info.get("bid" if side.upper() == "BUY" else "ask", entry_price))
+                else:
+                    snapshot = get_live_gold_snapshot()
+                    close_price = float(snapshot.get("spot_gold", {}).get("price", entry_price))
+            except:
+                close_price = entry_price
+
+            price_diff = (close_price - entry_price) if side.upper() == "BUY" else (entry_price - close_price)
+            # Incorporate banked partial scale-out profit into final P&L
+            partial_pnl = float(trade.get("partial_realized_usd") or 0.0)
+            rem_lots = round(lots - float(trade.get("partial_closed_lots") or 0.0), 2)
+            if rem_lots < 0.01:
+                rem_lots = lots
+            rem_pnl = round(price_diff * rem_lots * 100.0, 2)
+            pnl = round(partial_pnl + rem_pnl, 2)
+
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE trade_executions 
+                    SET status = 'CLOSED', close_price = ?, pnl = ?, close_time = ?
+                    WHERE ticket = ?
+                    """,
+                    (close_price, pnl, now_str, ticket),
+                )
+                conn.commit()
+
+            # If trade closed with a loss, enforce Loss Cooldown to prevent chop whipsaws
+            if pnl < -0.50 and self.config.loss_cooldown_minutes > 0:
+                cooldown_secs = self.config.loss_cooldown_minutes * 60
+                self.cooldown_until = datetime.now(timezone.utc).timestamp() + cooldown_secs
+                self._save_state("cooldown_until_ts", str(self.cooldown_until))
+                logger.info(
+                    "🛡️ Trade #%s closed with loss ($%.2f). Enforcing %d-minute loss cooldown.",
+                    ticket, pnl, self.config.loss_cooldown_minutes
+                )
+
+            # If trade was part of the Compounding Ladder, advance or step down ladder state
+            is_compounding_trade = (
+                "compounding" in comment.lower()
+                or "ladder" in comment.lower()
+                or self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH")
+            )
+            if is_compounding_trade:
+                try:
+                    ladder = CompoundingLadderManager()
+                    is_be = abs(pnl) <= 0.35
+                    is_win = pnl > 0.35
+                    ladder_update = ladder.record_trade_result(
+                        win=is_win,
+                        realized_pnl=pnl,
+                        exit_price=close_price,
+                        is_breakeven=is_be,
+                        notes=f"AutoTrader Ticket #{ticket} closed at {close_price}",
+                    )
+                    logger.info(f"Compounding Ladder updated after Ticket #{ticket}: {ladder_update}")
+                except Exception as e:
+                    logger.error(f"Failed to update compounding ladder on trade exit: {e}")
+
+            if self.config.send_telegram_alerts:
+                self.notifier.send_trade_exit(
+                    ticket=ticket,
+                    symbol=symbol,
+                    side=side,
+                    lots=lots,
+                    entry_price=entry_price,
+                    close_price=close_price,
+                    pnl=pnl,
+                    close_reason="Take-Profit / Stop-Loss Triggered",
+                    account_balance=current_balance,
+                )
+
+    def get_recent_history(self, limit: int = 10) -> Dict[str, Any]:
+        """Fetch latest scan logs and trade executions."""
+        scans = []
+        trades = []
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM scan_logs ORDER BY id DESC LIMIT ?", (limit,))
+                scans = [dict(row) for row in cur.fetchall()]
+                cur.execute("SELECT * FROM trade_executions ORDER BY id DESC LIMIT ?", (limit,))
+                trades = [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.error("Error reading history: %s", e)
+            
+        return {"scans": scans, "trades": trades}

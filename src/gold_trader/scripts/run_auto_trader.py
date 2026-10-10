@@ -1,0 +1,151 @@
+"""
+24/7 Autonomous Gold Live Market Scanner & Risk-Reward Trading Daemon.
+Usage:
+    python -m gold_trader.scripts.run_auto_trader --once
+    python -m gold_trader.scripts.run_auto_trader --loop --interval-seconds 60
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+from datetime import datetime, timezone
+
+from gold_trader.brokers.socket_broker import SocketBroker
+from gold_trader.core.auto_trader import AutoTraderConfig, GoldAutoTrader
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("AutoTraderRunner")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="24/7 Gold Live Scanner & Autonomous Auto-Trader")
+    parser.add_argument("--symbol", default="XAUUSD", help="Trading symbol (XAUUSD / GOLD)")
+    parser.add_argument("--timeframe", default="1h", help="Candle timeframe (5m, 15m, 1h)")
+    parser.add_argument(
+        "--mode",
+        default="COMPOUNDING_TOUCH",
+        choices=["COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH", "STANDARD_SWING", "DONCHIAN_BREAKOUT", "DONCHIAN_MOMENTUM_HYBRID"],
+        help="Trading mode",
+    )
+    parser.add_argument("--interval-seconds", type=int, default=60, help="Scan interval in seconds")
+    parser.add_argument("--ladder-level", type=int, default=None, help="Set starting level (1-37) for compounding ladder (e.g. 5 for $200)")
+    parser.add_argument("--min-rr", type=float, default=1.25, help="Minimum Risk-Reward ratio (e.g. 1.25 for High-Velocity Touch)")
+    parser.add_argument("--risk-pct", type=float, default=10.0, help="Risk percentage per trade (e.g. 10.0 for Sprint phase)")
+    parser.add_argument("--donchian-period", type=int, default=10, help="Donchian channel lookback period (default: 10)")
+    parser.add_argument("--trend-filter-ema", type=int, default=50, help="Trend filter EMA period (50 or 200, default: 50)")
+    parser.add_argument("--trigger-mode", default="TOUCH", choices=["TOUCH", "CLOSE"], help="Trigger mode: TOUCH or CLOSE (default: TOUCH)")
+    parser.add_argument("--min-quality", type=int, default=80, help="Minimum setup quality score (0-100)")
+    parser.add_argument("--max-positions", type=int, default=2, help="Max open positions limit")
+    parser.add_argument("--dry-run", action="store_true", help="Analyze and evaluate without placing real orders")
+    parser.add_argument("--once", action="store_true", help="Run a single evaluation cycle and exit")
+    parser.add_argument("--loop", action="store_true", help="Run continuously in a 24/7 monitoring loop")
+    parser.add_argument("--one-trade-per-bar", action=argparse.BooleanOptionalAction, default=True, help="Enforce maximum 1 trade execution per 15m candle bar")
+    parser.add_argument("--loss-cooldown-minutes", type=int, default=60, help="Pause scanning/trading for N minutes after a stop loss (default: 60)")
+    parser.add_argument("--use-pullback-limit", action=argparse.BooleanOptionalAction, default=False, help="Execute via Pullback Limit order")
+    parser.add_argument("--pullback-discount-pips", type=float, default=0.0, help="Pips discount into EMA Value Zone (default: 0.0)")
+    parser.add_argument("--max-daily-trades", type=int, default=6, help="Maximum trades executed per calendar day (default: 6)")
+    parser.add_argument("--session-filter", action=argparse.BooleanOptionalAction, default=True, help="Restrict entries to 07:00-19:00 UTC London/NY hours")
+    parser.add_argument("--enable-partial-scale-out", action=argparse.BooleanOptionalAction, default=True, help="Enable 50% scale-out at Target 1 (+1.0R)")
+    parser.add_argument("--partial-scale-out-pct", type=float, default=0.50, help="Partial scale-out percentage (default: 0.50)")
+    parser.add_argument("--scale-out-r", type=float, default=1.00, help="Target 1 R-multiple for partial scale out (default: 1.00)")
+    parser.add_argument("--enable-runner-trailing", action=argparse.BooleanOptionalAction, default=True, help="Enable dynamic runner trailing after Target 1")
+    parser.add_argument("--runner-trail-buffer", type=float, default=6.00, help="Runner trailing buffer in USD (default: 6.00)")
+    parser.add_argument("--runner-target-2-multiplier", type=float, default=2.50, help="Target 2 extension multiplier (default: 2.50)")
+
+    args = parser.parse_args()
+
+    if args.ladder_level is not None:
+        from gold_trader.core.compounding_ladder import CompoundingLadderManager
+        mgr = CompoundingLadderManager()
+        status = mgr.set_level(args.ladder_level)
+        logger.info(f"🪜 Compounding Ladder manually configured to Level {status['current_level']} (Target balance: ${status['current_balance']:.2f})")
+
+    cfg = AutoTraderConfig(
+        symbol=args.symbol,
+        timeframe=args.timeframe,
+        mode=args.mode,
+        risk_pct_per_trade=args.risk_pct,
+        min_risk_reward=args.min_rr,
+        min_quality_score=args.min_quality,
+        max_open_positions=args.max_positions,
+        scan_interval_seconds=args.interval_seconds,
+        auto_execute=not args.dry_run,
+        trail_to_breakeven_at_t1=True,
+        one_trade_per_bar=args.one_trade_per_bar,
+        loss_cooldown_minutes=args.loss_cooldown_minutes,
+        use_pullback_limit=args.use_pullback_limit,
+        pullback_discount_pips=args.pullback_discount_pips,
+        max_daily_trades=args.max_daily_trades,
+        session_filter=args.session_filter,
+        donchian_period=args.donchian_period,
+        trend_filter_ema=args.trend_filter_ema,
+        trigger_mode=args.trigger_mode,
+        enable_partial_scale_out=args.enable_partial_scale_out,
+        partial_scale_out_pct=args.partial_scale_out_pct,
+        scale_out_r=args.scale_out_r,
+        enable_runner_trailing=args.enable_runner_trailing,
+        runner_trail_buffer_usd=args.runner_trail_buffer,
+        runner_target_2_multiplier=args.runner_target_2_multiplier,
+    )
+
+    trader = GoldAutoTrader(broker=SocketBroker(), config_override=cfg)
+
+    logger.info("=" * 60)
+    logger.info("🚀 24/7 Autonomous Gold Trading Engine Initialized")
+    logger.info(f"   Mode: {cfg.mode} | Symbol: {cfg.symbol} | Timeframe: {cfg.timeframe} | Min R:R: {cfg.min_risk_reward:.2f}R")
+    logger.info(f"   Donchian: {cfg.donchian_period} | Filter: {cfg.trend_filter_ema} EMA | Trigger: {cfg.trigger_mode}")
+    logger.info(f"   Risk Per Trade: {cfg.risk_pct_per_trade}% | Min Quality: {cfg.min_quality_score}/100")
+    logger.info(f"   Bar Lock: {cfg.one_trade_per_bar} | Loss Cooldown: {cfg.loss_cooldown_minutes}m")
+    logger.info(f"   Daily Trade Cap: {cfg.max_daily_trades} | Session Filter: {cfg.session_filter}")
+    logger.info(f"   Auto Execute: {cfg.auto_execute} | Max Open: {cfg.max_open_positions}")
+    logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
+    logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (Buffer: ${cfg.runner_trail_buffer_usd:.2f} | T2: {cfg.runner_target_2_multiplier:.2f}R)")
+    if cfg.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH"):
+        from gold_trader.core.compounding_ladder import CompoundingLadderManager
+        l_stat = CompoundingLadderManager().get_status()
+        next_sp = l_stat.get("next_trade_specs", {})
+        logger.info(f"🪜 Compounding Mode: {l_stat.get('ladder_mode')} (Policy: {l_stat.get('loss_policy')})")
+        logger.info(f"   Level: {l_stat.get('current_level')} ({next_sp.get('phase', 'Sprint')}) | Balance: ${l_stat.get('current_balance'):.2f} | Floor: ${l_stat.get('ratchet_floor', 0.0):.2f}")
+        logger.info(f"   Planned Risk: ${next_sp.get('expected_risk_usd', 0.0):.2f} ({next_sp.get('risk_pct', 0.0)}%) | Target Gain: ${next_sp.get('expected_gain_usd', 0.0):.2f} ({next_sp.get('reward_risk_ratio', 1.25)}R)")
+    logger.info("=" * 60)
+
+    if args.once or not args.loop:
+        result = trader.evaluate_and_trade()
+        logger.info(f"Scan Decision: {result.get('decision')}")
+        logger.info(f"Summary: Price=${result.get('current_price')} | Action={result.get('action')} | Bias={result.get('bias')} | R:R={result.get('risk_reward_ratio')}R")
+        if result.get("order_result"):
+            logger.info(f"Order Result: {result.get('order_result')}")
+        return
+
+    # Loop mode
+    logger.info(f"Entering continuous monitoring loop (Interval: {cfg.scan_interval_seconds}s)...")
+    cycle = 1
+    while True:
+        try:
+            logger.info(f"\n--- [Cycle #{cycle}] Scanning Gold Market @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} ---")
+            res = trader.evaluate_and_trade()
+            logger.info(f"Price: ${res.get('current_price')} | Trend: {res.get('bias')} | Setup: {res.get('setup_name')} | Score: {res.get('quality_score')}")
+            logger.info(f"Decision: {res.get('decision')}")
+            if res.get("order_result"):
+                logger.info(f"⚡ ORDER EVENT: {res.get('order_result')}")
+            if res.get("managed_actions"):
+                logger.info(f"🛡️ POSITION MANAGEMENT: {res.get('managed_actions')}")
+                
+            cycle += 1
+            time.sleep(cfg.scan_interval_seconds)
+        except KeyboardInterrupt:
+            logger.info("\nAuto-Trader stopped by user.")
+            break
+        except Exception as e:
+            logger.error(f"Error in scan cycle: {e}", exc_info=True)
+            time.sleep(10)
+
+
+if __name__ == "__main__":
+    main()
