@@ -1,36 +1,84 @@
-# 🏆 Institutional Gold Trading System MCP
+# 🏆 Autonomous Gold (XAU/USD) & Bitcoin (BTC/USD) Algorithmic Trading Platform
 
-A specialized, quantitative **Gold Trading MCP Server** designed for Spot Gold ($XAU/USD$), COMEX Gold Futures ($GC=F$), and Gold ETFs ($GLD$, $GOLDBEES.NS$).
+An autonomous, institutional-grade quantitative trading platform and 24/7 background execution daemon for **Spot Gold (XAU/USD)** and **Bitcoin (BTC/USD)** on **XM MetaTrader 5 (MT5)**, running on Linux (Ubuntu/Debian via Wine 64-bit and Xvfb).
 
-Featuring **Multi-Timeframe Trend Filtering**, **Fibonacci 0.618-0.786 Golden Pocket Detection**, **Macro Dollar & Yield Confluence**, **3-Agent Debate Consensus**, **Pure Python Backtesting**, and direct execution via **XM Broker (MT5 / MetaAPI)** and simulated **Paper Trading**.
+Featuring **OpenBB Platform Macro & News Catalyst Guardrails**, **Institutional Two-Stage Compounding Ladder**, **Dynamic ATR Noise Clearance**, **Telegram Real-time Telemetry**, and **Turn-Key VPS Deployment**.
 
 ---
 
 ## 🌟 Key Architecture & Capabilities
 
 ```mermaid
-flowchart TD
-    subgraph Data & Macro Feed
-        A1["Spot Gold / COMEX Futures / Gold ETFs"]
-        A2["US Dollar Index (DXY)"]
-        A3["US 10Y Yields (^TNX)"]
+graph TD
+    subgraph MarketBridge [Execution Bridge Layer]
+        Wine["Wine 64-bit (Xvfb Virtual Display :99)"]
+        MT5["XM Global MT5 Terminal"]
+        Bridge["Socket Bridge Server (bridge_server.py)<br/>TCP 127.0.0.1:8888"]
+        Wine --> MT5
+        MT5 <--> Bridge
     end
 
-    subgraph 3-Layer Quality Engine
-        B1["Layer 1: Macro & Daily Trend Filter (200 EMA + Supertrend)"]
-        B2["Layer 2: Setup Zone (0.618-0.786 Golden Pocket / Donchian Breakout)"]
-        B3["Layer 3: Risk Calculation (ATR Stop-Loss + R:R ≥ 2.0 + Lot Sizing)"]
+    subgraph OpenBBLayer [Macroeconomic & News Catalyst Guard]
+        OpenBB["OpenBB Platform v5.0.0"]
+        FedCal["Fed / FRED Economic Calendars"]
+        YieldCurve["US Treasury Yield Curve (10Y-2Y Spread)"]
+        COT["CFTC Commitment of Traders (COT)"]
+        DVOL["Deribit Bitcoin Volatility (DVOL)"]
+        OpenBB --> FedCal & YieldCurve & COT & DVOL
     end
 
-    subgraph Consensus & Execution
-        C1["3-Agent Debate (Technical, Macro, Risk Manager)"]
-        C2["Strategy Backtesting & Tournament"]
-        C3["Broker Layer: XM MT5 / MetaAPI / Paper Trading"]
+    subgraph CoreEngine [Core Autonomous Daemons]
+        GoldBot["Gold Auto-Trader (1H Donchian Touch + 50 EMA)"]
+        BTCBot["Bitcoin Auto-Trader (1H Donchian Touch + ATR $500)"]
+        Ladder["Compounding Ladder Manager (Noise-Adaptive Matrix)"]
+        NewsGuard["News Catalyst Guard (±15m Blackout Window)"]
+        
+        Bridge -->|Live Ticks & Candles| GoldBot & BTCBot
+        FedCal --> NewsGuard
+        NewsGuard -->|Pause execution on CPI/NFP/FOMC| GoldBot & BTCBot
+        YieldCurve & COT & DVOL --> GoldBot & BTCBot
+        Ladder <--> GoldBot & BTCBot
+        GoldBot & BTCBot -->|Limit/Market Orders| Bridge
     end
 
-    A1 & A2 & A3 --> B1 --> B2 --> B3 --> C1 --> C3
-    B2 --> C2
+    subgraph Persistence [State & Telemetry]
+        DB[("auto_trader.db & btc_auto_trader.db (SQLite)")]
+        StateJSON["compounding_ladder_state.json & btc_state.json"]
+        Telegram["Telegram Instant Alerts (@Gold_Signals_vip_2026_bot)"]
+        GoldBot & BTCBot --> DB & StateJSON & Telegram
+    end
 ```
+
+---
+
+## 🚀 Key Modules & Innovations
+
+### 1. High-Impact News Catalyst Guard (Powered by OpenBB Platform v5)
+- **Zero Spread-Spike Drawdowns**: Monitors upcoming macroeconomic events from Federal Reserve and FRED calendars. Automatically enforces an automated **$\pm 15$-minute trading blackout window** around high-impact US releases (**FOMC rate decisions, US CPI, Core PCE, Non-Farm Payrolls, and GDP**).
+- **Yield Curve & Recession Monitor**: Evaluates 10Y-2Y US Treasury Yield Curve spreads in real-time. Inversion signals late-cycle structural flight-to-safety into Gold.
+- **CFTC Commitment of Traders (COT)**: Tracks COMEX Gold institutional commercial vs. non-commercial speculative positioning (`CFTC_088691`), detecting large hedge fund accumulation.
+- **Deribit Bitcoin Volatility Index (DVOL)**: Tracks 30-day option-implied volatility for BTC to identify pre-breakout volatility coils versus exhaustion spikes.
+
+### 2. Autonomous Dual-Asset 24/7 Daemons
+- **Gold (`XAUUSD`)**:
+  - Strategy: `COMPOUNDING_TOUCH` (1H Donchian 10 Touch + SuperTrend + 50 EMA filter).
+  - Noise Clearance: Minimum dynamic stop-loss $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$8.00)$.
+  - Schedule: Active trading during liquid London/NY sessions (07:00–19:00 UTC); weekend filter enforced.
+- **Bitcoin (`BTCUSD`)**:
+  - Strategy: `COMPOUNDING_TOUCH` calibrated for crypto microstructure.
+  - Sizing & Clearance: Contract size `1.0` (1 lot = 1 BTC), minimum ATR stop $\ge \$500.00$, Break-Even buffer $+\$30.00$, runner trail buffer $\$500.00$.
+  - Schedule: **24/7/365 continuous operation** (no weekend market closure).
+
+### 3. Institutional Two-Stage Compounding Ladder
+- **Noise-Adaptive Matrix**: 37 discrete calibrated steps scaling from **$100.00** up to **$5,337.29+**.
+- **Stage 1 (Partial Scale-Out)**: At Target 1 (+1.0R), 50% volume is closed into realized cash.
+- **Stage 2 (Risk-Free Runner)**: Remaining position stop-loss shifts to Break-Even + buffer, locking in a completely risk-free runner.
+- **Stage 3 (Dynamic Wide Trail)**: Runner trailing stop follows peak price excursions with an ATR-cleared buffer up to Target 2 (2.5R).
+- **Progressive Ratchet Floors**: Dynamic capital preservation floors ($150 at $250, $350 at $500, $700 at $1,000, $1,800 at $2,500) prevent equity drawdowns from cascading back down.
+
+### 4. Turnkey Linux Wine MT5 Bridge
+- Runs official XM Global MT5 (64-bit) under headless Linux using Wine and `Xvfb` virtual display `:99`.
+- High-speed TCP socket bridge server (`127.0.0.1:8888`) connects Python with MT5 with zero cloud gateway fees ($0 cost).
 
 ---
 
@@ -38,158 +86,124 @@ flowchart TD
 
 ```
 /home/mcpuser/MCP/gold-trading-system/
-├── pyproject.toml              # Project packaging & dependencies
-├── requirements.txt            # Python dependencies
-├── .env.example                # XM broker and risk environment configuration
+├── pyproject.toml                     # Python packaging & dependencies
+├── requirements.txt                   # Platform requirements
+├── AGENTS.md                          # Persistent System Architecture Knowledge Base
+├── README.md                          # Platform documentation
+├── scripts/
+│   ├── start_bridge.sh                # Start MT5 Wine socket bridge
+│   ├── run_bridge.sh                  # Internal Wine/Xvfb execution wrapper
+│   ├── start_auto_trader.sh           # Start Gold auto-trader daemon
+│   ├── stop_auto_trader.sh            # Stop Gold auto-trader daemon
+│   ├── start_btc_auto_trader.sh       # Start Bitcoin auto-trader daemon
+│   ├── stop_btc_auto_trader.sh        # Stop Bitcoin auto-trader daemon
+│   ├── export_migration_bundle.sh     # Turn-key VPS export script
+│   └── setup_new_vps.sh               # Turn-key new VPS automated bootstrap
 ├── src/
 │   └── gold_trader/
-│       ├── __init__.py
-│       ├── config.py           # Central configuration & symbol registry
-│       ├── types.py            # TypedDicts & Data models
 │       ├── core/
-│       │   ├── indicators.py   # Pure Python technical indicators (Supertrend, Donchian, EMA, RSI, ATR)
-│       │   ├── fibonacci.py    # Fibonacci retracement & 0.618-0.786 Golden Pocket engine
-│       │   ├── macro.py        # DXY Dollar Index & US 10Y Yields correlation
-│       │   ├── data_feed.py    # Multi-market gold & macro data provider
-│       │   ├── strategy_engine.py # 3-Layer institutional trade setup generator
-│       │   ├── multi_agent.py  # 3-Agent debate & consensus framework
-│       │   └── backtester.py   # Strategy backtester with transaction costs
+│       │   ├── openbb_feed.py         # OpenBB Platform macroeconomic & news catalyst feed
+│       │   ├── auto_trader.py         # 24/7 Autonomous Scanner, Execution Controller & Manager
+│       │   ├── compounding_ladder.py  # Noise-Adaptive Compounding Matrix & Ratchet Floors
+│       │   ├── strategy_engine.py     # 1H Donchian Touch & Momentum Hybrid setups
+│       │   ├── macro.py               # Macro drivers (DXY, 10Y Yields, Yield Curve, COT)
+│       │   ├── indicators.py          # Supertrend, Donchian, EMA, ATR, RSI calculations
+│       │   ├── fibonacci.py           # Golden Pocket retracement & liquidity detection
+│       │   ├── price_action.py        # Pin bars, engulfing candles, and liquidity sweeps
+│       │   └── telegram_notifier.py   # Real-time Telegram alerts
 │       ├── brokers/
-│       │   ├── base.py         # Abstract Base Broker interface
-│       │   ├── paper_broker.py # Local SQLite paper trading broker
-│       │   ├── xm_mt5_broker.py# Native XM MetaTrader 5 broker (Windows/VPS)
-│       │   └── metaapi_broker.py # Cloud REST MetaAPI broker (Linux/Docker)
-│       └── server.py           # FastMCP server exposing all tools
+│       │   ├── socket_broker.py       # High-speed TCP socket bridge client
+│       │   ├── paper_broker.py        # Local SQLite simulated broker
+│       │   └── base.py                # Abstract Broker interface
+│       ├── scripts/
+│       │   ├── run_auto_trader.py     # Unified CLI daemon entrypoint for Gold & Bitcoin
+│       │   └── sync_broker_deals.py   # Closed trade reconciliation & P&L sync
+│       └── server.py                  # FastMCP tools interface
 └── tests/
-    └── test_gold_system.py     # Comprehensive unit tests
+    ├── test_auto_trader.py            # Auto-trader engine test suite
+    ├── test_openbb_feed.py            # OpenBB macro & catalyst guard test suite
+    ├── test_high_velocity_touch.py    # Donchian touch execution tests
+    └── test_telegram_notifier.py      # Alert formatting tests
 ```
 
 ---
 
-## 🚀 Quick Start
+## ⚡ Fast CLI Commands & Operations
 
-### 1. Installation
+### 1. Check System Health & Daemons
+```bash
+# Check MT5 Bridge Connection
+python3 -c "from gold_trader.brokers.socket_broker import SocketBroker; print('Bridge Online:', SocketBroker().connect())"
 
+# Check MT5 Account Balance & Margin
+python3 -c "from gold_trader.brokers.socket_broker import SocketBroker; print(SocketBroker().get_account_info())"
+
+# Check Systemd User Services
+systemctl --user status mt5-bridge.service gold-auto-trader.service btc-auto-trader.service --no-pager
+```
+
+### 2. Verify OpenBB Macro & News Guard
+```bash
+# Check if current time is within high-impact news blackout window (±15m)
+python3 -c "from gold_trader.core.openbb_feed import check_high_impact_news_window; print(check_high_impact_news_window(buffer_minutes=15))"
+
+# Fetch live US Treasury Yield Curve and Macro Confluence
+python3 -c "from gold_trader.core.openbb_feed import fetch_openbb_macro_data; print(fetch_openbb_macro_data())"
+
+# Fetch composite Macro Score
+python3 -c "from gold_trader.core.macro import analyze_macro_drivers; print(analyze_macro_drivers())"
+```
+
+### 3. Check Compounding Ladder States
+```bash
+# Gold Compounding Ladder Status
+python3 -c "from gold_trader.core.compounding_ladder import CompoundingLadderManager; print(CompoundingLadderManager().get_status())"
+
+# Bitcoin Compounding Ladder Status
+python3 -c "from gold_trader.core.compounding_ladder import CompoundingLadderManager; print(CompoundingLadderManager(state_file='~/.gold_trading_data/btc_compounding_ladder_state.json').get_status())"
+```
+
+### 4. Monitor Live Daemon Logs
+```bash
+# Tail Gold trading logs
+tail -f auto_trader.log
+
+# Tail Bitcoin trading logs
+tail -f btc_auto_trader.log
+
+# Tail MT5 Bridge logs
+tail -f bridge.log
+```
+
+---
+
+## 🚚 Turnkey VPS Migration
+
+To migrate this entire setup (Wine, MT5 terminal, Python environments, database states, and systemd services) to a new VPS in under 5 minutes:
+
+### On Existing VPS:
 ```bash
 cd /home/mcpuser/MCP/gold-trading-system
-pip install -e .
+bash scripts/export_migration_bundle.sh
+# Creates /home/mcpuser/gold_trading_migration_bundle.tar.gz
 ```
 
-### 2. Configure Environment
-
-Copy `.env.example` to `.env` and configure your broker:
-
+### On New VPS (Clean Ubuntu 22.04 / 24.04):
 ```bash
-cp .env.example .env
+# Copy bundle and run setup
+bash setup_new_vps.sh
 ```
-
-#### A. Free MT5 Socket Bridge (Option 3 - Recommended & $0 Cost):
-Direct local TCP communication with XM MT5 without any cloud subscription fees:
-```ini
-BROKER_MODE=socket
-XM_ACCOUNT_TYPE=demo   # "demo" or "live"
-MT5_BRIDGE_HOST=127.0.0.1
-MT5_BRIDGE_PORT=8888
-```
-*Attach `mql5/GoldTraderBridge.mq5` to any chart in XM MT5.*
-
-#### B. Simulated Mode (Paper Trading):
-```ini
-BROKER_MODE=paper
-DEFAULT_SYMBOL=XAUUSD
-DEFAULT_RISK_PER_TRADE_PCT=1.0
-```
-
-#### C. Native XM MT5 (Windows / VPS with MetaTrader5 package):
-```ini
-BROKER_MODE=xm_mt5
-XM_ACCOUNT_TYPE=demo   # Toggle between "demo" and "live"
-
-# XM Demo Account
-XM_DEMO_LOGIN=12345678
-XM_DEMO_PASSWORD=your_demo_password
-XM_DEMO_SERVER=XMGlobal-MT5
-
-# XM Live Account (⚠️ Real Capital)
-XM_LIVE_LOGIN=87654321
-XM_LIVE_PASSWORD=your_live_password
-XM_LIVE_SERVER=XMGlobal-MT5
-```
-
-#### D. MetaAPI Cloud Gateway (Paid Cloud Subscription):
-```ini
-BROKER_MODE=metaapi
-XM_ACCOUNT_TYPE=demo
-
-METAAPI_TOKEN=your_metaapi_token
-METAAPI_DEMO_ACCOUNT_ID=your_demo_account_id
-METAAPI_LIVE_ACCOUNT_ID=your_live_account_id
-```
-
-### 3. Run the MCP Server
-
-```bash
-# stdio mode (for Claude Desktop / Antigravity / Cursor)
-python3 -m gold_trader.server
-
-# or streamable HTTP mode
-python3 -m gold_trader.server streamable-http --port 8001
-```
-
-### 4. Run Unit Tests
-
-```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -p "test_*.py"
-```
+The script automatically installs Wine, Xvfb, Python 3.13, restores MT5 credentials and databases, configures `systemd` user services, and enables auto-start on boot.
 
 ---
 
-## 🛠️ Available MCP Tools
+## 🧪 Testing
 
-### 📊 Market Intelligence & Analysis
-| Tool | Description |
-| :--- | :--- |
-| `gold_market_snapshot` | Synchronized snapshot of Spot Gold, COMEX Futures, Gold ETFs, DXY, and US10Y. |
-| `gold_technical_analysis` | Multi-timeframe indicators (EMAs 20/50/200, Supertrend, Donchian, Bollinger, RSI, MACD, ATR, ADX). |
-| `gold_fibonacci_analysis` | Swing highs/lows, **0.618 - 0.786 Golden Pocket**, supports/resistances, and extension targets. |
-| `gold_macro_analysis` | Macro Gold headwinds/tailwinds score from US Dollar Index (DXY) and US 10-Year Treasury Yields. |
+Run the automated test suite with pytest:
 
-### 🎯 Trade Generation & Consensus
-| Tool | Description |
-| :--- | :--- |
-| `gold_trade_setup` | High-conviction 3-layer trade setup with exact Entry, Stop-Loss ($1.5\times\text{ATR}$), Targets (T1/T2), and risk-adjusted Lot Sizing. |
-| `gold_multi_agent_debate` | 3-agent debate (**Technical Analyst**, **Macro/Yields Analyst**, **Risk Manager**) reaching a consensus rating (`STRONG BUY`, `BUY`, `HOLD`, `SELL`, `STRONG SELL`). |
-
-### 🚀 30-Level Compounding Ladder & Machine Learning
-| Tool | Description |
-| :--- | :--- |
-| `get_compounding_ladder_status` | Query active level, balance, and next stage parameters for the 30-Level Compounding Plan ($20 -> $52,384). |
-| `generate_compounding_ladder_setup_tool`| Evaluates live Gold market against ML High-Probability Gatekeeper ($P(\text{Win}) \ge 70\%$) with exact 20-pip TP / 15-pip SL bracket. |
-| `execute_compounding_ladder_trade` | Automatically executes the ladder stage bracket order on active broker (XM MT5 / Paper) if ML probability is approved. |
-| `predict_gold_trade_probability` | Evaluates live microstructure, session, and macro state to predict win probability for BUY or SELL. |
-| `train_gold_ml_model` | Trains or recalibrates the Gradient Boosting Triple-Barrier Meta-Classifier with walk-forward cross-validation. |
-| `reset_compounding_ladder` | Resets the compounding ladder to Level 1 ($20) with selectable loss policies. |
-| `set_compounding_ladder_level` | Manually sets active level (1 to 30) to align with existing account balance. |
-
-### 📈 Strategy Backtesting
-| Tool | Description |
-| :--- | :--- |
-| `gold_backtest` | Backtest Gold strategies (`supertrend`, `donchian`, `ema_cross`, `bollinger`) with transaction costs & Sharpe/Calmar metrics. |
-| `gold_compare_strategies` | Run all strategies in parallel and rank them on total return, win rate, and max drawdown. |
-
-### 💼 Broker Execution (XM MT5 / MetaAPI / Paper Trading)
-| Tool | Description |
-| :--- | :--- |
-| `broker_account_info` | Query live balance, equity, free margin, margin level, and leverage. |
-| `broker_open_positions` | Monitor open trades, tickets, lot sizes, and floating PnL. |
-| `broker_place_order` | Execute a BUY or SELL order with volume and automatic SL/TP. |
-| `broker_modify_position`| Modify Stop-Loss or Take-Profit of an open trade. |
-| `broker_close_position` | Close an open trade by ticket number. |
+```bash
+python3 -m pytest tests/test_auto_trader.py tests/test_openbb_feed.py tests/test_price_action.py tests/test_telegram_notifier.py
+```
 
 ---
-
-## 🔒 Safety & Risk Management
-
-- **Risk Per Trade Enforcement**: Never trades fixed lot sizes; dynamically calculates lot size so losing a trade costs exactly `DEFAULT_RISK_PER_TRADE_PCT`% of account balance.
-- **Dynamic ATR Stops**: Anchored beyond market noise ($1.5\times\text{ATR}$) to prevent premature stop-outs.
-- **Top-Down Trend Filter**: Prevents taking 5m/15m counter-trend trades against the Daily macro direction.
+*Maintained by Antigravity Agentic Pair Programmer.*
