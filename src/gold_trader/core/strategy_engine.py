@@ -778,7 +778,9 @@ def generate_donchian_momentum_hybrid_setup(
         eff_entry = c
 
     # Stop Loss & Take Profit Brackets
-    stop_distance = max(round(1.5 * atr_val, 2), 8.00)
+    is_btc = "BTC" in symbol.upper()
+    min_stop = 500.0 if is_btc else 8.00
+    stop_distance = max(round(1.5 * atr_val, 2), min_stop)
     stop_distance_pips = round(stop_distance * 10, 1)
 
     if action == "BUY":
@@ -796,7 +798,8 @@ def generate_donchian_momentum_hybrid_setup(
 
     rr_t1 = round(abs(target_1 - eff_entry) / stop_distance, 2) if stop_distance > 0 else rr_multiplier
     rr_t2 = round(abs(target_2 - eff_entry) / stop_distance, 2) if stop_distance > 0 else 2.5
-    suggested_lots = calculate_lot_size(account_balance, risk_pct, eff_entry, stop_loss)
+    c_size = 1.0 if is_btc else 100.0
+    suggested_lots = calculate_lot_size(account_balance, risk_pct, eff_entry, stop_loss, contract_size=c_size)
 
     bias = "BULLISH" if (macro_bullish and st_dir == 1) else ("BEARISH" if (macro_bearish and st_dir == -1) else "NEUTRAL")
 
@@ -851,7 +854,15 @@ def generate_compounding_ladder_setup(
     - Legacy 1H Hybrid: Donchian 15 Breakout + MACD Momentum with 200 EMA.
     - Strategy 1 (15m/5m): High-frequency EMA 9/21 Value Zone Pullback with 8-pip limit discount entry.
     """
-    ladder = ladder_manager or CompoundingLadderManager()
+    if ladder_manager is not None:
+        ladder = ladder_manager
+    else:
+        ladder_file = "~/.gold_trading_data/btc_compounding_ladder_state.json" if "BTC" in symbol.upper() else None
+        ladder = CompoundingLadderManager(
+            state_file=ladder_file,
+            ladder_mode="NOISE_ADAPTIVE_LADDER",
+            loss_policy="PROGRESSIVE_RATCHET",
+        )
     ladder_status = ladder.get_status()
     current_level = ladder_status["current_level"]
 
@@ -893,6 +904,7 @@ def generate_compounding_ladder_setup(
 
     # Calculate bracket order specs with dynamic ATR stop loss and compounding matrix lots.
     use_ladder_lots = False if is_hybrid_1h else True
+    min_sl = 500.0 if "BTC" in symbol.upper() else 8.0
     bracket_order = ladder.calculate_bracket_order(
         current_price=market_price,
         direction=action if action in ("BUY", "SELL") else "BUY",
@@ -901,7 +913,7 @@ def generate_compounding_ladder_setup(
         pullback_discount_pips=pullback_discount_pips,
         atr=setup_data.get("atr"),
         use_atr_stops=True,
-        min_sl_pts=8.0,
+        min_sl_pts=min_sl,
         use_ladder_lots=use_ladder_lots,
         rr_ratio=rr_multiplier if is_hybrid_1h else 1.33,
     )

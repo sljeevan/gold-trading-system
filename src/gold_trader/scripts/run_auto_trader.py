@@ -58,17 +58,33 @@ def main():
     parser.add_argument("--enable-runner-trailing", action=argparse.BooleanOptionalAction, default=True, help="Enable dynamic runner trailing after Target 1")
     parser.add_argument("--runner-trail-buffer", type=float, default=6.00, help="Runner trailing buffer in USD (default: 6.00)")
     parser.add_argument("--runner-target-2-multiplier", type=float, default=2.50, help="Target 2 extension multiplier (default: 2.50)")
+    parser.add_argument("--ladder-state-file", default=None, help="Path to compounding ladder state JSON file")
+    parser.add_argument("--db-path", default=None, help="Path to SQLite database file")
 
     args = parser.parse_args()
 
+    target_ladder_file = args.ladder_state_file or (
+        "~/.gold_trading_data/btc_compounding_ladder_state.json"
+        if "BTC" in args.symbol.upper()
+        else "~/.gold_trading_data/compounding_ladder_state.json"
+    )
+
     if args.starting_capital is not None:
         from gold_trader.core.compounding_ladder import CompoundingLadderManager
-        mgr = CompoundingLadderManager()
-        status = mgr.reset_ladder(starting_balance=args.starting_capital)
+        mgr = CompoundingLadderManager(
+            state_file=target_ladder_file,
+            ladder_mode="NOISE_ADAPTIVE_LADDER",
+            loss_policy="PROGRESSIVE_RATCHET",
+        )
+        status = mgr.reset_ladder(starting_balance=args.starting_capital, reset_stats=True)
         logger.info(f"🪜 Compounding Ladder reset to starting capital ${args.starting_capital:.2f} at Level {status['current_level']} (Target balance: ${status['current_balance']:.2f})")
     elif args.ladder_level is not None:
         from gold_trader.core.compounding_ladder import CompoundingLadderManager
-        mgr = CompoundingLadderManager()
+        mgr = CompoundingLadderManager(
+            state_file=target_ladder_file,
+            ladder_mode="NOISE_ADAPTIVE_LADDER",
+            loss_policy="PROGRESSIVE_RATCHET",
+        )
         status = mgr.set_level(args.ladder_level)
         logger.info(f"🪜 Compounding Ladder manually configured to Level {status['current_level']} (Target balance: ${status['current_balance']:.2f})")
 
@@ -98,12 +114,14 @@ def main():
         enable_runner_trailing=args.enable_runner_trailing,
         runner_trail_buffer_usd=args.runner_trail_buffer,
         runner_target_2_multiplier=args.runner_target_2_multiplier,
+        ladder_state_file=args.ladder_state_file,
+        db_path=args.db_path,
     )
 
     trader = GoldAutoTrader(broker=SocketBroker(), config_override=cfg)
 
     logger.info("=" * 60)
-    logger.info("🚀 24/7 Autonomous Gold Trading Engine Initialized")
+    logger.info(f"🚀 24/7 Autonomous {cfg.symbol} Trading Engine Initialized")
     logger.info(f"   Mode: {cfg.mode} | Symbol: {cfg.symbol} | Timeframe: {cfg.timeframe} | Min R:R: {cfg.min_risk_reward:.2f}R")
     logger.info(f"   Donchian: {cfg.donchian_period} | Filter: {cfg.trend_filter_ema} EMA | Trigger: {cfg.trigger_mode}")
     logger.info(f"   Risk Per Trade: {cfg.risk_pct_per_trade}% | Min Quality: {cfg.min_quality_score}/100")
@@ -113,8 +131,7 @@ def main():
     logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
     logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (Buffer: ${cfg.runner_trail_buffer_usd:.2f} | T2: {cfg.runner_target_2_multiplier:.2f}R)")
     if cfg.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH"):
-        from gold_trader.core.compounding_ladder import CompoundingLadderManager
-        l_stat = CompoundingLadderManager().get_status()
+        l_stat = trader.ladder_manager.get_status()
         next_sp = l_stat.get("next_trade_specs", {})
         logger.info(f"🪜 Compounding Mode: {l_stat.get('ladder_mode')} (Policy: {l_stat.get('loss_policy')})")
         logger.info(f"   Level: {l_stat.get('current_level')} ({next_sp.get('phase', 'Sprint')}) | Balance: ${l_stat.get('current_balance'):.2f} | Floor: ${l_stat.get('ratchet_floor', 0.0):.2f}")
@@ -134,7 +151,7 @@ def main():
     cycle = 1
     while True:
         try:
-            logger.info(f"\n--- [Cycle #{cycle}] Scanning Gold Market @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} ---")
+            logger.info(f"\n--- [Cycle #{cycle}] Scanning {cfg.symbol} Market @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} ---")
             res = trader.evaluate_and_trade()
             logger.info(f"Price: ${res.get('current_price')} | Trend: {res.get('bias')} | Setup: {res.get('setup_name')} | Score: {res.get('quality_score')}")
             logger.info(f"Decision: {res.get('decision')}")

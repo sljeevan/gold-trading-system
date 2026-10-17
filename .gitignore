@@ -31,3 +31,7 @@ mt5.zip
 .DS_Store
 .vscode/
 .idea/
+
+# Trade dump files
+mt5_deals_history.json
+

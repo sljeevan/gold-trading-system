@@ -11,7 +11,7 @@ import socket
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict
 
 import MetaTrader5 as mt5
@@ -52,6 +52,8 @@ def map_symbol(requested: str) -> str:
     candidates = [requested_upper]
     if "GOLD" in requested_upper or "XAU" in requested_upper:
         candidates = ["GOLD", "GOLDmicro", "XAUUSD", "GOLD#", "GOLDm", "XAUUSDm", "XAUUSD#"]
+    elif "BTC" in requested_upper:
+        candidates = ["BTCUSD", "BTCUSD#", "BTCUSDm", "BTC"]
     
     # Priority 1: Candidate with full trading permissions and live ticks
     for c in candidates:
@@ -490,6 +492,95 @@ def handle_client(conn: socket.socket, addr: Any):
                 else:
                     err_msg = res.comment if res else str(mt5.last_error())
                     resp = {"status": "ERROR", "message": f"Failed to modify #{ticket}: {err_msg}"}
+
+        elif cmd in ("HISTORY_DEALS", "DEAL_HISTORY", "GET_DEAL_HISTORY", "GET_DEALS"):
+            ticket = int(req.get("ticket") or req.get("position") or 0)
+            if ticket > 0:
+                deals = mt5.history_deals_get(position=ticket)
+                if not deals:
+                    deals = mt5.history_deals_get(ticket=ticket)
+
+                if deals:
+                    deal_records = []
+                    total_profit = 0.0
+                    total_commission = 0.0
+                    total_swap = 0.0
+                    entry_price = None
+                    close_price = None
+                    close_time = None
+                    close_comment = ""
+
+                    for d in deals:
+                        deal_dt = datetime.fromtimestamp(d.time, tz=timezone.utc).isoformat()
+                        d_comm = float(getattr(d, "commission", 0.0))
+                        d_swap = float(getattr(d, "swap", 0.0))
+                        d_prof = float(d.profit)
+                        total_profit += d_prof
+                        total_commission += d_comm
+                        total_swap += d_swap
+
+                        deal_records.append({
+                            "ticket": str(d.ticket),
+                            "order": str(d.order),
+                            "position_id": str(d.position_id),
+                            "time": deal_dt,
+                            "type": "BUY" if d.type == 0 else "SELL",
+                            "entry": int(d.entry),
+                            "volume": float(d.volume),
+                            "price": float(d.price),
+                            "profit": d_prof,
+                            "commission": d_comm,
+                            "swap": d_swap,
+                            "comment": d.comment,
+                            "symbol": d.symbol,
+                        })
+
+                        if d.entry == 0:
+                            entry_price = float(d.price)
+                        elif d.entry in (1, 2, 3):
+                            close_price = float(d.price)
+                            close_time = deal_dt
+                            close_comment = d.comment
+
+                    resp = {
+                        "status": "SUCCESS",
+                        "position_id": str(ticket),
+                        "total_profit": round(total_profit, 2),
+                        "total_commission": round(total_commission, 2),
+                        "total_swap": round(total_swap, 2),
+                        "net_pnl": round(total_profit + total_commission + total_swap, 2),
+                        "entry_price": entry_price,
+                        "close_price": close_price,
+                        "close_time": close_time,
+                        "close_comment": close_comment,
+                        "deals": deal_records,
+                    }
+                else:
+                    resp = {"status": "ERROR", "message": f"No deals found for position #{ticket}"}
+            else:
+                days = int(req.get("days", 7))
+                date_from = datetime.now(timezone.utc) - timedelta(days=days)
+                date_to = datetime.now(timezone.utc) + timedelta(days=1)
+                deals = mt5.history_deals_get(date_from, date_to)
+                deal_list = []
+                if deals:
+                    for d in deals:
+                        deal_list.append({
+                            "ticket": str(d.ticket),
+                            "position_id": str(d.position_id),
+                            "order": str(d.order),
+                            "time": datetime.fromtimestamp(d.time, tz=timezone.utc).isoformat(),
+                            "type": "BUY" if d.type == 0 else "SELL",
+                            "entry": int(d.entry),
+                            "volume": float(d.volume),
+                            "price": float(d.price),
+                            "profit": float(d.profit),
+                            "commission": float(getattr(d, "commission", 0.0)),
+                            "swap": float(getattr(d, "swap", 0.0)),
+                            "comment": d.comment,
+                            "symbol": d.symbol,
+                        })
+                resp = {"status": "SUCCESS", "count": len(deal_list), "deals": deal_list}
 
         else:
             resp = {"status": "ERROR", "message": f"Unknown command: {cmd}"}

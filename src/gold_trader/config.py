@@ -99,6 +99,9 @@ class Settings:
         "DXY": "DX-Y.NYB",          # US Dollar Index
         "US10Y": "^TNX",            # US 10-Year Treasury Yield
         "USDINR": "INR=X",          # USD to INR Exchange Rate
+        "BTCUSD": "BTC-USD",        # Bitcoin Spot USD
+        "BTC": "BTC-USD",
+        "BTC-USD": "BTC-USD",
     }
 
     def get_xm_credentials(self, account_type: Optional[str] = None) -> tuple[int, str, str]:

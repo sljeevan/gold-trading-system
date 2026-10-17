@@ -221,6 +221,46 @@ Derived from web research across institutional quantitative literature and real 
 3. **High-Impact News Catalyst Guard**: Suspending order execution 15 minutes before and after US CPI, NFP, and FOMC announcements eliminates 15–30 pip spread expansion spikes and **cuts maximum drawdown by 38%**.
 
 ---
+
+## 7. Bitcoin (BTCUSD) Autonomous Trading System & Compounding Ladder
+
+The platform features full concurrent support for **Bitcoin (BTCUSD)** running alongside Gold on the XM MT5 Demo terminal.
+
+### 7.1 Architecture & Isolation Model
+- **Capital Baseline**: **$1,000.00 Starting Seed**
+- **Ladder State File**: [`~/.gold_trading_data/btc_compounding_ladder_state.json`](file:///home/mcpuser/.gold_trading_data/btc_compounding_ladder_state.json) (Level 18, $700 ratchet floor).
+- **SQLite Database**: [`~/.gold_trading_data/btc_auto_trader.db`](file:///home/mcpuser/.gold_trading_data/btc_auto_trader.db) (Completely isolated SQLite instance preventing database lock collisions with Gold).
+- **Execution Log**: [`btc_auto_trader.log`](file:///home/mcpuser/MCP/gold-trading-system/btc_auto_trader.log)
+- **Systemd Service**: `btc-auto-trader.service` (User service, auto-restarted, parallel with `gold-auto-trader.service`).
+
+### 7.2 Microstructure & Sizing Rules for Crypto
+| Parameter | Gold (XAUUSD) | Bitcoin (BTCUSD) | Rationale |
+| :--- | :--- | :--- | :--- |
+| **Contract Size** | `100.0` (1 lot = 100 oz) | **`1.0` (1 lot = 1 BTC)** | XM MT5 specifications: BTC contract size is 1.0. |
+| **Minimum Stop Loss** | `$8.00` | **`$500.00`** | Enforces minimum ATR clearance above intraday noise ($450-$700 ATR). |
+| **Break-Even Buffer** | `+$0.50` | **`+$30.00`** | Prevents spread whip-outs on runner moves. |
+| **Trailing Buffer** | `$6.00` | **`$500.00`** | 1.0x ATR buffer behind peak excursion for runners. |
+| **Trading Schedule** | Sun 22:05 – Fri 21:00 UTC | **24/7/365 (No Weekend Filter)** | Bitcoin trades continuously across all weekend sessions. |
+
+### 7.3 Operational Runbook & Fast CLI Commands for Bitcoin
+```bash
+# 1. Check Bitcoin Auto-Trader Status
+systemctl --user status btc-auto-trader.service --no-pager
+
+# 2. View Bitcoin Compounding Ladder Status
+python3 -c "from gold_trader.core.compounding_ladder import CompoundingLadderManager; print(CompoundingLadderManager(state_file='~/.gold_trading_data/btc_compounding_ladder_state.json').get_status())"
+
+# 3. Start Bitcoin Auto-Trader Service
+bash scripts/start_btc_auto_trader.sh
+
+# 4. Stop Bitcoin Auto-Trader Service
+bash scripts/stop_btc_auto_trader.sh
+
+# 5. Tail Live Bitcoin Daemon Execution Log
+tail -f btc_auto_trader.log
+```
+
+---
 *Maintained by Antigravity Agentic Pair Programmer.*
 
 

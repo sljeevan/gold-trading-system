@@ -418,9 +418,15 @@ class CompoundingLadderManager:
         risk_capital = max(bal - floor, bal * 0.35) if floor > 0 else bal
         active_pct = self.get_active_risk_pct() / 100.0
 
+        is_btc = "BTC" in symbol.upper()
+        contract_size = 1.0 if is_btc else CONTRACT_SIZE
+        default_min_sl = 500.0 if is_btc else 8.0
+
         if use_atr_stops and (atr is not None or min_sl_pts > 0):
-            current_atr = atr if (atr and atr > 0) else 15.0
-            min_pts = lvl_info.get("min_sl_dollars", min_sl_pts) if self.ladder_mode == "NOISE_ADAPTIVE_LADDER" else min_sl_pts
+            current_atr = atr if (atr and atr > 0) else (450.0 if is_btc else 15.0)
+            min_pts = lvl_info.get("min_sl_dollars", default_min_sl) if self.ladder_mode == "NOISE_ADAPTIVE_LADDER" else default_min_sl
+            if is_btc:
+                min_pts = max(min_pts, 500.0)
             sl_pts = round(max(1.5 * current_atr, min_pts), 2)
             eff_rr = rr_ratio if rr_ratio is not None else lvl_info.get("rr_ratio", 1.25)
             tp_pts = round(sl_pts * eff_rr, 2)
@@ -432,12 +438,12 @@ class CompoundingLadderManager:
                 planned_risk_usd = lvl_info["risk_dollars"]
                 if self.is_circuit_breaker_active():
                     planned_risk_usd *= 0.50
-                calculated_lots = math.floor((planned_risk_usd / (sl_pts * CONTRACT_SIZE)) * 100.0 + 0.0001) / 100.0
+                calculated_lots = math.floor((planned_risk_usd / (sl_pts * contract_size)) * 100.0 + 0.0001) / 100.0
                 lots = max(MIN_LOT, min(MAX_LOT, calculated_lots))
             else:
                 # Dynamic lot sizing based on active archetype & risk capital
                 planned_risk_usd = risk_capital * active_pct
-                calculated_lots = math.floor((planned_risk_usd / (sl_pts * CONTRACT_SIZE)) * 100.0 + 0.0001) / 100.0
+                calculated_lots = math.floor((planned_risk_usd / (sl_pts * contract_size)) * 100.0 + 0.0001) / 100.0
                 lots = max(MIN_LOT, min(MAX_LOT, calculated_lots))
         else:
             lots = lvl_info.get("lot_size", 0.01)
@@ -458,8 +464,8 @@ class CompoundingLadderManager:
             sl_price = round(entry_price + sl_pts, 2)
             be_trigger_price = round(entry_price - be_pts, 2)
 
-        expected_profit = round(lots * CONTRACT_SIZE * tp_pts, 2)
-        expected_loss = round(lots * CONTRACT_SIZE * sl_pts, 2)
+        expected_profit = round(lots * contract_size * tp_pts, 2)
+        expected_loss = round(lots * contract_size * sl_pts, 2)
 
         return {
             "symbol": symbol.upper(),

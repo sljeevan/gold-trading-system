@@ -273,3 +273,15 @@ class SocketBroker(BaseBroker):
             "ticket": ticket_int,
         })
 
+    def get_deal_history(self, ticket: Optional[str | int] = None, days: int = 7) -> Dict[str, Any]:
+        """Fetch historical deal receipt directly from MT5 terminal."""
+        payload: Dict[str, Any] = {"command": "GET_DEAL_HISTORY"}
+        if ticket is not None:
+            try:
+                payload["ticket"] = int(ticket)
+            except (ValueError, TypeError):
+                payload["ticket"] = str(ticket)
+        else:
+            payload["days"] = days
+        return self._send_command(payload)
+

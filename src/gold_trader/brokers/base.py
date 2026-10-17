@@ -73,3 +73,7 @@ class BaseBroker(ABC):
         """Cancel an active pending order."""
         return {"status": "ERROR", "message": "Not implemented"}
 
+    def get_deal_history(self, ticket: Optional[str | int] = None, days: int = 7) -> Dict[str, Any]:
+        """Fetch historical deals/receipts from broker."""
+        return {"status": "ERROR", "message": "Not implemented"}
+
