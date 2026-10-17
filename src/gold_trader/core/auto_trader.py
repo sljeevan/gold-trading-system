@@ -70,6 +70,8 @@ class AutoTraderConfig:
     enable_runner_trailing: bool = True
     runner_trail_buffer_usd: float = 6.00
     runner_target_2_multiplier: float = 2.50
+    enable_news_catalyst_guard: bool = True
+    news_guard_buffer_minutes: int = 15
     ladder_state_file: Optional[str] = None
     db_path: Optional[str] = None
 
@@ -460,6 +462,22 @@ class GoldAutoTrader:
             rejection_reasons.append(
                 f"Daily Trade Cap Reached: {daily_trades_count} trades executed today >= max {self.config.max_daily_trades}. Capital preserved."
             )
+
+        # Check News Catalyst Guard (Pause entries around high-impact macroeconomic releases via OpenBB)
+        if self.config.enable_news_catalyst_guard and action in ("BUY", "SELL"):
+            try:
+                from gold_trader.core.openbb_feed import check_high_impact_news_window
+                news_status = check_high_impact_news_window(buffer_minutes=self.config.news_guard_buffer_minutes)
+                if news_status.get("is_in_news_window"):
+                    ev_title = news_status.get("event_title", "High-Impact Catalyst")
+                    ev_time = news_status.get("event_time_utc", "")
+                    diff_m = news_status.get("minutes_to_nearest_event", 0.0)
+                    rejection_reasons.append(
+                        f"News Catalyst Guard (OpenBB): High-impact release '{ev_title}' at {ev_time} "
+                        f"({diff_m:+.1f}m away). Pausing entries within ±{self.config.news_guard_buffer_minutes}m to eliminate spread spikes."
+                    )
+            except Exception as e:
+                logger.debug("News catalyst guard check note: %s", e)
 
         # 6. Make Final Decision & Execute
         if rejection_reasons:

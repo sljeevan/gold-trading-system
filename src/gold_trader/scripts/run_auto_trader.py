@@ -58,6 +58,8 @@ def main():
     parser.add_argument("--enable-runner-trailing", action=argparse.BooleanOptionalAction, default=True, help="Enable dynamic runner trailing after Target 1")
     parser.add_argument("--runner-trail-buffer", type=float, default=6.00, help="Runner trailing buffer in USD (default: 6.00)")
     parser.add_argument("--runner-target-2-multiplier", type=float, default=2.50, help="Target 2 extension multiplier (default: 2.50)")
+    parser.add_argument("--enable-news-catalyst-guard", action=argparse.BooleanOptionalAction, default=True, help="Pause trades ±15m around high-impact US macro events (CPI, NFP, FOMC)")
+    parser.add_argument("--news-guard-buffer-minutes", type=int, default=15, help="Minutes blackout buffer before/after high-impact news (default: 15)")
     parser.add_argument("--ladder-state-file", default=None, help="Path to compounding ladder state JSON file")
     parser.add_argument("--db-path", default=None, help="Path to SQLite database file")
 
@@ -114,6 +116,8 @@ def main():
         enable_runner_trailing=args.enable_runner_trailing,
         runner_trail_buffer_usd=args.runner_trail_buffer,
         runner_target_2_multiplier=args.runner_target_2_multiplier,
+        enable_news_catalyst_guard=args.enable_news_catalyst_guard,
+        news_guard_buffer_minutes=args.news_guard_buffer_minutes,
         ladder_state_file=args.ladder_state_file,
         db_path=args.db_path,
     )
@@ -127,6 +131,7 @@ def main():
     logger.info(f"   Risk Per Trade: {cfg.risk_pct_per_trade}% | Min Quality: {cfg.min_quality_score}/100")
     logger.info(f"   Bar Lock: {cfg.one_trade_per_bar} | Loss Cooldown: {cfg.loss_cooldown_minutes}m")
     logger.info(f"   Daily Trade Cap: {cfg.max_daily_trades} | Session Filter: {cfg.session_filter}")
+    logger.info(f"   News Catalyst Guard (OpenBB): {cfg.enable_news_catalyst_guard} (±{cfg.news_guard_buffer_minutes}m buffer)")
     logger.info(f"   Auto Execute: {cfg.auto_execute} | Max Open: {cfg.max_open_positions}")
     logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
     logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (Buffer: ${cfg.runner_trail_buffer_usd:.2f} | T2: {cfg.runner_target_2_multiplier:.2f}R)")

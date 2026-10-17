@@ -35,3 +35,7 @@ mt5.zip
 # Trade dump files
 mt5_deals_history.json
 
+# Screenshots & Images
+*.png
+*.jpg
+*.jpeg

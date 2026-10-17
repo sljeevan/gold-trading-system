@@ -65,6 +65,18 @@ def analyze_macro_drivers() -> Dict[str, Any]:
     except Exception as e:
         yield_status = f"Error fetching US10Y: {e}"
 
+    # 3. OpenBB Macro Confluence (Yield Curve Spread & CFTC COT Positioning)
+    openbb_data = {}
+    try:
+        from gold_trader.core.openbb_feed import fetch_openbb_macro_data
+        openbb_data = fetch_openbb_macro_data()
+        obb_score = openbb_data.get("macro_confluence_score", 0)
+        score += obb_score
+        obb_signals = openbb_data.get("signals", [])
+        signals.extend(obb_signals)
+    except Exception as e:
+        signals.append(f"OpenBB feed note: {e}")
+
     if score >= 2:
         macro_bias = "Bullish Gold Tailwinds"
     elif score <= -2:
@@ -77,5 +89,7 @@ def analyze_macro_drivers() -> Dict[str, Any]:
         "macro_bias": macro_bias,
         "dxy_analysis": dxy_status,
         "us10y_analysis": yield_status,
+        "openbb_macro": openbb_data,
         "signals": signals,
     }
+
