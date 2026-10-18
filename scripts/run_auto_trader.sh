@@ -17,14 +17,16 @@ done
 exec /usr/bin/python3 -u -m gold_trader.scripts.run_auto_trader \
     --loop \
     --interval-seconds 60 \
-    --min-rr 1.2 \
-    --risk-pct 1.0 \
+    --min-rr 1.25 \
+    --risk-pct 8.0 \
     --timeframe 1h \
-    --mode DONCHIAN_MOMENTUM_HYBRID \
+    --mode COMPOUNDING_TOUCH \
+    --runner-trail-buffer 4.50 \
+    --runner-target-2-multiplier 3.00 \
+    --enable-ml-filter \
+    --ml-min-prob 0.52 \
     --one-trade-per-bar \
     --loss-cooldown-minutes 60 \
-    --max-daily-trades 4 \
-    --session-filter \
-    --use-pullback-limit \
-    --pullback-discount-pips 8.0 2>&1 | tee -a /home/mcpuser/MCP/gold-trading-system/auto_trader.log
+    --max-daily-trades 6 \
+    --session-filter 2>&1 | tee -a /home/mcpuser/MCP/gold-trading-system/auto_trader.log
 

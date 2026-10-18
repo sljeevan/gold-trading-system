@@ -594,6 +594,7 @@ def generate_donchian_momentum_hybrid_setup(
     rr_multiplier: float = 1.25,
     trend_filter_ema: int = 50,
     trigger_mode: str = "TOUCH",
+    runner_t2_multiplier: float = 3.0,
 ) -> Dict[str, Any]:
     """
     High-Velocity Donchian 10 Touch + SuperTrend + 50 EMA Strategy for Gold (XAUUSD).
@@ -786,18 +787,18 @@ def generate_donchian_momentum_hybrid_setup(
     if action == "BUY":
         stop_loss = round(eff_entry - stop_distance, 2)
         target_1 = round(eff_entry + (rr_multiplier * stop_distance), 2)
-        target_2 = round(eff_entry + (2.5 * stop_distance), 2)
+        target_2 = round(eff_entry + (runner_t2_multiplier * stop_distance), 2)
     elif action == "SELL":
         stop_loss = round(eff_entry + stop_distance, 2)
         target_1 = round(eff_entry - (rr_multiplier * stop_distance), 2)
-        target_2 = round(eff_entry - (2.5 * stop_distance), 2)
+        target_2 = round(eff_entry - (runner_t2_multiplier * stop_distance), 2)
     else:
         stop_loss = round(eff_entry - stop_distance, 2)
         target_1 = round(eff_entry + (rr_multiplier * stop_distance), 2)
-        target_2 = round(eff_entry + (2.5 * stop_distance), 2)
+        target_2 = round(eff_entry + (runner_t2_multiplier * stop_distance), 2)
 
     rr_t1 = round(abs(target_1 - eff_entry) / stop_distance, 2) if stop_distance > 0 else rr_multiplier
-    rr_t2 = round(abs(target_2 - eff_entry) / stop_distance, 2) if stop_distance > 0 else 2.5
+    rr_t2 = round(abs(target_2 - eff_entry) / stop_distance, 2) if stop_distance > 0 else runner_t2_multiplier
     c_size = 1.0 if is_btc else 100.0
     suggested_lots = calculate_lot_size(account_balance, risk_pct, eff_entry, stop_loss, contract_size=c_size)
 

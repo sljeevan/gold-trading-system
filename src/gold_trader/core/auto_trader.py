@@ -68,10 +68,14 @@ class AutoTraderConfig:
     partial_scale_out_pct: float = 0.50
     scale_out_r: float = 1.00
     enable_runner_trailing: bool = True
-    runner_trail_buffer_usd: float = 6.00
-    runner_target_2_multiplier: float = 2.50
+    runner_trail_buffer_usd: float = 4.50
+    runner_target_2_multiplier: float = 3.00
     enable_news_catalyst_guard: bool = True
     news_guard_buffer_minutes: int = 15
+    enable_ml_filter: bool = False
+    ml_min_probability: float = 0.52
+    ml_dynamic_sizing: bool = False
+    ml_model_path: Optional[str] = None
     ladder_state_file: Optional[str] = None
     db_path: Optional[str] = None
 
@@ -122,7 +126,9 @@ class GoldAutoTrader:
         return p_u.startswith(t_u) or t_u.startswith(p_u)
 
     def _ensure_db(self):
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        dname = os.path.dirname(self.db_path)
+        if dname:
+            os.makedirs(dname, exist_ok=True)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS scan_logs (
@@ -479,6 +485,41 @@ class GoldAutoTrader:
             except Exception as e:
                 logger.debug("News catalyst guard check note: %s", e)
 
+        # Check Machine Learning High-Probability Meta-Labeling Gate
+        ml_eval = None
+        if self.config.enable_ml_filter and action in ("BUY", "SELL"):
+            try:
+                from gold_trader.core.ml_filter import GoldMLPredictor
+                predictor = GoldMLPredictor(model_path=self.config.ml_model_path, symbol=symbol)
+                candles_eval = fetch_gold_candles(symbol, period="1mo", interval=self.config.timeframe)
+                if candles_eval and len(candles_eval) >= 200:
+                    ml_eval = predictor.predict_trade_probability(
+                        candles_eval,
+                        direction=action,
+                        min_probability_threshold=self.config.ml_min_probability,
+                    )
+                    setup["ml_filter"] = ml_eval
+                    prob_win = float(ml_eval.get("probability_win", 0.50))
+                    is_high_conv = bool(ml_eval.get("is_high_conviction", False))
+                    lot_mult = float(ml_eval.get("recommended_lot_multiplier", 1.0))
+
+                    if not is_high_conv:
+                        rejection_reasons.append(
+                            f"ML Filter Gate: Win probability {prob_win:.1%} < minimum threshold "
+                            f"{self.config.ml_min_probability:.1%}. Skipping low-probability setup to preserve capital."
+                        )
+                    else:
+                        logger.info(
+                            f"🤖 ML Gate Approved: Win Probability {prob_win:.1%} >= {self.config.ml_min_probability:.1%} "
+                            f"({ml_eval.get('recommendation', 'APPROVED')})"
+                        )
+                        if self.config.ml_dynamic_sizing and lot_mult > 0:
+                            old_lots = suggested_lots
+                            suggested_lots = max(0.01, round(suggested_lots * lot_mult, 2))
+                            logger.info(f"🤖 ML Dynamic Sizing: Scaled lots {old_lots} -> {suggested_lots} (x{lot_mult:.2f})")
+            except Exception as ml_err:
+                logger.debug("ML Filter gate evaluation note: %s", ml_err)
+
         # 6. Make Final Decision & Execute
         if rejection_reasons:
             decision = f"SKIP: {'; '.join(rejection_reasons)}"
@@ -662,7 +703,7 @@ class GoldAutoTrader:
                 contract_size = 1.0 if is_btc else 100.0
                 default_sl_dist = 500.00 if is_btc else 8.00
                 be_offset = 30.00 if is_btc else 0.50
-                trail_buffer = self.config.runner_trail_buffer_usd if (self.config.runner_trail_buffer_usd != 6.00 or not is_btc) else 500.00
+                trail_buffer = self.config.runner_trail_buffer_usd if (not is_btc or self.config.runner_trail_buffer_usd > 50.0) else 350.00
 
                 tracked = self.tracked_positions.get(ticket)
                 if not tracked:

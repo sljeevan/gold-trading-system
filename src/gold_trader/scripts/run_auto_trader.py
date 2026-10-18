@@ -56,10 +56,14 @@ def main():
     parser.add_argument("--partial-scale-out-pct", type=float, default=0.50, help="Partial scale-out percentage (default: 0.50)")
     parser.add_argument("--scale-out-r", type=float, default=1.00, help="Target 1 R-multiple for partial scale out (default: 1.00)")
     parser.add_argument("--enable-runner-trailing", action=argparse.BooleanOptionalAction, default=True, help="Enable dynamic runner trailing after Target 1")
-    parser.add_argument("--runner-trail-buffer", type=float, default=6.00, help="Runner trailing buffer in USD (default: 6.00)")
-    parser.add_argument("--runner-target-2-multiplier", type=float, default=2.50, help="Target 2 extension multiplier (default: 2.50)")
+    parser.add_argument("--runner-trail-buffer", type=float, default=4.50, help="Runner trailing buffer in USD (default: 4.50 for Gold, 350.00 for BTC)")
+    parser.add_argument("--runner-target-2-multiplier", type=float, default=3.00, help="Target 2 extension multiplier (default: 3.00)")
     parser.add_argument("--enable-news-catalyst-guard", action=argparse.BooleanOptionalAction, default=True, help="Pause trades ±15m around high-impact US macro events (CPI, NFP, FOMC)")
     parser.add_argument("--news-guard-buffer-minutes", type=int, default=15, help="Minutes blackout buffer before/after high-impact news (default: 15)")
+    parser.add_argument("--enable-ml-filter", action=argparse.BooleanOptionalAction, default=True, help="Enable Machine Learning win probability filter gate (default: True)")
+    parser.add_argument("--ml-min-prob", type=float, default=0.52, help="Minimum win probability threshold for ML filter (default: 0.52)")
+    parser.add_argument("--ml-dynamic-sizing", action=argparse.BooleanOptionalAction, default=False, help="Enable dynamic ML confidence-weighted position sizing (default: False)")
+    parser.add_argument("--ml-model-path", default=None, help="Custom path to ML model joblib file")
     parser.add_argument("--ladder-state-file", default=None, help="Path to compounding ladder state JSON file")
     parser.add_argument("--db-path", default=None, help="Path to SQLite database file")
 
@@ -114,10 +118,14 @@ def main():
         partial_scale_out_pct=args.partial_scale_out_pct,
         scale_out_r=args.scale_out_r,
         enable_runner_trailing=args.enable_runner_trailing,
-        runner_trail_buffer_usd=args.runner_trail_buffer,
+        runner_trail_buffer_usd=(350.00 if "BTC" in args.symbol.upper() and args.runner_trail_buffer == 4.50 else args.runner_trail_buffer),
         runner_target_2_multiplier=args.runner_target_2_multiplier,
         enable_news_catalyst_guard=args.enable_news_catalyst_guard,
         news_guard_buffer_minutes=args.news_guard_buffer_minutes,
+        enable_ml_filter=args.enable_ml_filter,
+        ml_min_probability=args.ml_min_prob,
+        ml_dynamic_sizing=args.ml_dynamic_sizing,
+        ml_model_path=args.ml_model_path,
         ladder_state_file=args.ladder_state_file,
         db_path=args.db_path,
     )
@@ -132,6 +140,7 @@ def main():
     logger.info(f"   Bar Lock: {cfg.one_trade_per_bar} | Loss Cooldown: {cfg.loss_cooldown_minutes}m")
     logger.info(f"   Daily Trade Cap: {cfg.max_daily_trades} | Session Filter: {cfg.session_filter}")
     logger.info(f"   News Catalyst Guard (OpenBB): {cfg.enable_news_catalyst_guard} (±{cfg.news_guard_buffer_minutes}m buffer)")
+    logger.info(f"   ML Meta-Labeling Filter: {cfg.enable_ml_filter} (Min Win Prob: {cfg.ml_min_probability:.1%}, Dynamic Sizing: {cfg.ml_dynamic_sizing})")
     logger.info(f"   Auto Execute: {cfg.auto_execute} | Max Open: {cfg.max_open_positions}")
     logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
     logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (Buffer: ${cfg.runner_trail_buffer_usd:.2f} | T2: {cfg.runner_target_2_multiplier:.2f}R)")
