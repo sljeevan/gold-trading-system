@@ -1,12 +1,13 @@
-# 🏆 Autonomous Gold (XAU/USD) & Bitcoin (BTC/USD) Algorithmic Trading Platform
+# 🏆 Autonomous Multi-Asset Algorithmic Trading Platform
+### Spot Gold (`XAUUSD`) • Bitcoin (`BTCUSD`) • Ethereum (`ETHUSD`)
 
-An autonomous, institutional-grade quantitative trading platform and 24/7 background execution daemon for **Spot Gold (XAU/USD)** and **Bitcoin (BTC/USD)** on **XM MetaTrader 5 (MT5)**, running on Linux (Ubuntu/Debian via Wine 64-bit and Xvfb).
+An autonomous, institutional-grade quantitative trading platform and 24/7 background execution engine on **XM MetaTrader 5 (MT5)**, running on Linux (Ubuntu/Debian via Wine 64-bit and Xvfb).
 
-Featuring **OpenBB Platform Macro & News Catalyst Guardrails**, **Institutional Two-Stage Compounding Ladder**, **Dynamic ATR Noise Clearance**, **Telegram Real-time Telemetry**, and **Turn-Key VPS Deployment**.
+Featuring **OpenBB Platform Macro & News Catalyst Guardrails**, **Marcos López de Prado Triple-Barrier LightGBM Meta-Labeling**, **Realistic Flat Risk Execution ($75.44 Planned Risk on $1,000 Baseline)**, **Dynamic ATR Noise Clearance**, **Telegram Real-time Telemetry**, and **Turn-Key VPS Deployment**.
 
 ---
 
-## 🌟 Key Architecture & Capabilities
+## 🌟 System Architecture & Component Map
 
 ```mermaid
 graph TD
@@ -28,24 +29,25 @@ graph TD
     end
 
     subgraph CoreEngine [Core Autonomous Daemons]
-        GoldBot["Gold Auto-Trader (1H Donchian Touch + 50 EMA)"]
-        BTCBot["Bitcoin Auto-Trader (1H Donchian Touch + ATR $500)"]
-        Ladder["Compounding Ladder Manager (Noise-Adaptive Matrix)"]
+        GoldBot["Gold Auto-Trader (1H Donchian Touch + 50 EMA, 07:00-19:00 UTC)"]
+        BTCBot["Bitcoin Auto-Trader (1H Donchian Touch + ATR $500, 24/7 Continuous)"]
+        ETHBot["Ethereum Auto-Trader (1H Donchian Touch + ATR $20, 07:00-19:00 UTC)"]
         NewsGuard["News Catalyst Guard (±15m Blackout Window)"]
+        MLGate["LightGBM Walk-Forward Meta-Labeler"]
         
-        Bridge -->|Live Ticks & Candles| GoldBot & BTCBot
+        Bridge -->|Live Ticks & Candles| GoldBot & BTCBot & ETHBot
         FedCal --> NewsGuard
-        NewsGuard -->|Pause execution on CPI/NFP/FOMC| GoldBot & BTCBot
-        YieldCurve & COT & DVOL --> GoldBot & BTCBot
-        Ladder <--> GoldBot & BTCBot
-        GoldBot & BTCBot -->|Limit/Market Orders| Bridge
+        NewsGuard -->|Pause execution on CPI/NFP/FOMC| GoldBot & BTCBot & ETHBot
+        YieldCurve & COT & DVOL --> GoldBot & BTCBot & ETHBot
+        MLGate -->|Conviction Gate Filter| GoldBot & BTCBot & ETHBot
+        GoldBot & BTCBot & ETHBot -->|Limit/Market Orders| Bridge
     end
 
     subgraph Persistence [State & Telemetry]
-        DB[("auto_trader.db & btc_auto_trader.db (SQLite)")]
-        StateJSON["compounding_ladder_state.json & btc_state.json"]
+        DB[("auto_trader.db, btc_auto_trader.db, eth_auto_trader.db (SQLite)")]
+        StateJSON["compounding_ladder_state.json, btc_state.json, eth_state.json"]
         Telegram["Telegram Instant Alerts (@Gold_Signals_vip_2026_bot)"]
-        GoldBot & BTCBot --> DB & StateJSON & Telegram
+        GoldBot & BTCBot & ETHBot --> DB & StateJSON & Telegram
     end
 ```
 
@@ -61,9 +63,9 @@ graph TD
 
 ### 2. Machine Learning Meta-Labeling & Dynamic Triple-Barrier Gate
 - **LightGBM Meta-Labeler**: Evaluates real-time 23 stationary microstructure features (EMA normalized distances, RSI momentum delta, ATR expansion ratios, Donchian channel positioning, session cyclical encoding).
-- **Walk-Forward Conviction Gate ($P \ge 0.52$)**: Automatically rejects low-conviction false breakouts and choppy consolidation trades, boosting Profit Factor above **2.01–2.22** and eliminating drawdown cascades.
+- **Walk-Forward Conviction Gate ($P \ge 0.44$ Live / $P \ge 0.52$ Strict)**: Automatically filters low-conviction false breakouts and choppy consolidation trades, boosting Profit Factor to **1.36–1.55** and Sharpe Ratio up to **5.47**.
 
-### 3. Autonomous Dual-Asset 24/7 Daemons
+### 3. Autonomous Tri-Asset Daemons
 - **Gold (`XAUUSD`)**:
   - Strategy: `COMPOUNDING_TOUCH` (1H Donchian 10 Touch + SuperTrend + 50 EMA filter).
   - Noise Clearance: Minimum dynamic stop-loss $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$8.00)$.
@@ -73,13 +75,21 @@ graph TD
   - Strategy: `COMPOUNDING_TOUCH` calibrated for crypto microstructure.
   - Sizing & Clearance: Contract size `1.0` (1 lot = 1 BTC), minimum ATR stop $\ge \$500.00$, Break-Even buffer $+\$30.00$, runner trail buffer **`$350.00`** up to Target 2 (**`3.00R`**).
   - Schedule: **24/7/365 continuous operation** (no weekend market closure).
+- **Ethereum (`ETHUSD`)**:
+  - Strategy: `COMPOUNDING_TOUCH` optimized with session liquidity filter.
+  - Sizing & Clearance: Contract size `1.0` (1 lot = 1 ETH), minimum ATR stop $\ge \$20.00$, Break-Even buffer $+\$2.00$, runner trail buffer **`$10.00`** up to Target 2 (**`3.00R`**), minimum volume `0.02` lots.
+  - Session Filter: **London & New York Sessions (07:00–19:00 UTC)**. Filters Asian chop, reducing maximum drawdown from 31.7% to a minimal **13.9%** while achieving a top-tier **5.47 Sharpe Ratio**.
 
-### 4. Institutional Two-Stage Compounding Ladder
-- **Noise-Adaptive Matrix**: 37 discrete calibrated steps scaling from **$100.00** up to **$5,337.29+**.
-- **Stage 1 (Partial Scale-Out)**: At Target 1 (+1.0R), 50% volume is closed into realized cash.
-- **Stage 2 (Risk-Free Runner)**: Remaining position stop-loss shifts to Break-Even + buffer ($0.50 on Gold, $30 on BTC), locking in a completely risk-free runner.
-- **Stage 3 (Dynamic Trailing Stop)**: Runner trailing stop follows peak price excursions ($4.50 Gold / $350 BTC) up to Target 2 (3.0R).
-- **Progressive Ratchet Floors**: Dynamic capital preservation floors ($150 at $250, $350 at $500, $700 at $1,000, $1,800 at $2,500) prevent equity drawdowns from cascading back down.
+### 4. Capital Risk Model & Institutional Two-Stage Execution
+- **Realistic `FLAT_RISK` Execution Model**:
+  - Account Baseline: **$1,000.00 Starting Capital**.
+  - Planned Risk: **$75.44 fixed dollar risk per trade** (~7.54% of baseline).
+  - Compounding Ladder: **Disabled in live production** to prioritize account longevity and prevent drawdown cascade risks.
+  - Dynamic Lot Calculation: $\text{Lots} = \text{round}\left(\frac{\text{Planned Risk USD}}{\text{SL Distance} \times \text{Contract Size}}, 2\right)$. Volatility expansions automatically scale down position size; risk per trade never deviates.
+- **Institutional Two-Stage Execution**:
+  - **Stage 1 (Partial Scale-Out)**: At Target 1 (+1.0R), 50% volume is closed into realized cash for positions $\ge 0.02$ lots.
+  - **Stage 2 (Risk-Free Runner)**: Remaining position stop-loss shifts to Break-Even + buffer ($0.50 on Gold, $30 on BTC, $2.00 on ETH), locking in a completely risk-free runner.
+  - **Stage 3 (Dynamic Trailing Stop)**: Runner trailing stop follows peak price excursions ($4.50 Gold / $350 BTC / $10 ETH) up to Target 2 (3.0R).
 
 ### 5. Turnkey Linux Wine MT5 Bridge
 - Runs official XM Global MT5 (64-bit) under headless Linux using Wine and `Xvfb` virtual display `:99`.
@@ -87,14 +97,21 @@ graph TD
 
 ---
 
-## 📊 2-Year Empirical Walk-Forward Backtest Performance
+## 📊 2-Year Walk-Forward Production Backtest Leaderboard
+*Evaluated on 11,434 hourly candles over 2 continuous years (2024–2026), 2.5-pip broker spread, Walk-Forward LightGBM Meta-Labeling, $1,000 Starting Capital, and $75.44 Fixed Risk:*
 
-| Asset & Mode | Trades | Win Rate % | Profit Factor | Net R | Net Points | Max DD | Compounding Ladder ($1,000 Seed) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 🥇 **Gold (XAU/USD) Live Production** | **719** | **63.0%** | **2.01** | **+288.8R** | **+7,599.0** | **53.8%** | **$429.4 Billion** |
-| 🥈 Gold Previous Baseline (TSL $6.00, T2 2.5R) | 719 | 63.0% | 1.95 | +269.7R | +7,078.2 | 70.4% | $110.5 Billion |
-| 🥇 **Bitcoin (BTC/USD) Live Production** | **1,566** | **65.1%** | **2.22** | **+635.4R** | **+483,205.3** | **58.9%** | **Exponential Compounding** |
-| 🥈 Bitcoin Previous Baseline (TSL $500, T2 2.5R) | 1,566 | 65.1% | 2.09 | +568.9R | +433,444.4 | 59.6% | Exponential Compounding |
+| Asset & Mode | Schedule / Window | ML Conviction Gate | Trades | Win Rate % | Profit Factor | Net R-Multiple | Sharpe Ratio | Max Drawdown ($ / %) | Net Profit ($1,000 Seed) | Final Balance |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 🥇 **Ethereum (ETH/USD) Live** | **London/NY (07:00–19:00 UTC)** | **$P \ge 0.44$** | **1,528** | **54.8%** | **1.55** | **+343.6R** | **5.47** | **$1,392.40 (13.9%)** | <span style="color:green">**+$25,918.90**</span> | **$26,918.90** |
+| 🥈 **Bitcoin (BTC/USD) Live** | **24/7/365 Continuous** | **$P \ge 0.44$** | **2,505** | **54.3%** | **1.36** | **+410.6R** | **5.28** | **$2,217.94 (18.5%)** | <span style="color:green">**+$30,979.31**</span> | **$31,979.31** |
+| 🥉 **Gold (XAU/USD) Live** | **London/NY (07:00–19:00 UTC)** | **$P \ge 0.44$** | **1,012** | **55.6%** | **1.47** | **+243.7R** | **4.79** | **$1,847.70 (56.8%)** | <span style="color:green">**+$18,384.09**</span> | **$19,384.09** |
+| Ethereum Strict | London/NY (07:00–19:00 UTC) | $P \ge 0.52$ | 1,155 | 54.0% | 1.48 | +231.2R | 4.26 | $1,419.09 (15.4%) | +$17,438.14 | $18,438.14 |
+| Bitcoin Strict | 24/7/365 Continuous | $P \ge 0.52$ | 1,849 | 54.7% | 1.40 | +322.2R | 4.82 | $1,702.11 (21.6%) | +$24,310.48 | $25,310.48 |
+| Gold Strict | London/NY (07:00–19:00 UTC) | $P \ge 0.52$ | 763 | 56.2% | 1.54 | +192.3R | 4.37 | $1,380.98 (61.6%) | +$14,506.94 | $15,506.94 |
+| Ethereum 24/7 (No Filter) | 24/7 Continuous | $P \ge 0.44$ | 2,827 | 53.6% | 1.34 | +393.3R | 4.73 | $2,764.53 (31.7%) | +$29,673.74 | $30,673.74 |
+
+> [!TIP]
+> **Why Session Filtering Wins on Ethereum**: Gold and Ethereum exhibit significant false-breakout noise during Asian low-liquidity hours. Enforcing the London/NY session filter (07:00–19:00 UTC) on Ethereum cuts maximum drawdown in half (from **31.7% down to 13.9%**) while elevating the Sharpe ratio to an institutional **5.47**.
 
 ---
 
@@ -107,21 +124,25 @@ graph TD
 ├── AGENTS.md                          # Persistent System Architecture Knowledge Base
 ├── README.md                          # Platform documentation
 ├── scripts/
-│   ├── run_production_backtest.py     # Live 2-year production walk-forward backtest (Gold & BTC)
+│   ├── run_production_backtest.py     # Live 2-year production walk-forward backtest (Gold, BTC, ETH)
 │   ├── optimize_sl_tsl_ml.py          # 35-configuration SL & TSL ML grid optimizer
-│   ├── optimize_strategy_combinations.py # 12-strategy combinatorial ML optimizer
+│   ├── optimize_strategy_combinations.py # Combinatorial ML optimizer
 │   ├── start_bridge.sh                # Start MT5 Wine socket bridge
 │   ├── run_bridge.sh                  # Internal Wine/Xvfb execution wrapper
 │   ├── start_auto_trader.sh           # Start Gold auto-trader daemon
 │   ├── stop_auto_trader.sh            # Stop Gold auto-trader daemon
-│   ├── start_btc_auto_trader.sh       # Start Bitcoin auto-trader daemon
-│   ├── stop_btc_auto_trader.sh        # Stop Bitcoin auto-trader daemon
+│   ├── run_btc_auto_trader.sh         # Run Bitcoin daemon foreground
+│   ├── start_btc_auto_trader.sh       # Start Bitcoin daemon background/service
+│   ├── stop_btc_auto_trader.sh        # Stop Bitcoin daemon
+│   ├── run_eth_auto_trader.sh         # Run Ethereum daemon foreground
+│   ├── start_eth_auto_trader.sh       # Start Ethereum daemon background/service
+│   ├── stop_eth_auto_trader.sh        # Stop Ethereum daemon
 │   ├── export_migration_bundle.sh     # Turn-key VPS export script
 │   └── setup_new_vps.sh               # Turn-key new VPS automated bootstrap
 ├── src/
 │   └── gold_trader/
 │       ├── core/
-│       │   ├── ml_filter.py           # LightGBM Meta-Labeler & Triple-Barrier Gate
+│       │   ├── ml_filter.py           # LightGBM Meta-Labeler & Triple-Barrier Gate (Gold, BTC, ETH models)
 │       │   ├── openbb_feed.py         # OpenBB Platform macroeconomic & news catalyst feed
 │       │   ├── auto_trader.py         # 24/7 Autonomous Scanner, Execution Controller & Manager
 │       │   ├── compounding_ladder.py  # Noise-Adaptive Compounding Matrix & Ratchet Floors
@@ -136,7 +157,7 @@ graph TD
 │       │   ├── paper_broker.py        # Local SQLite simulated broker
 │       │   └── base.py                # Abstract Broker interface
 │       ├── scripts/
-│       │   ├── run_auto_trader.py     # Unified CLI daemon entrypoint for Gold & Bitcoin
+│       │   ├── run_auto_trader.py     # Unified CLI daemon entrypoint for Gold, BTC & ETH
 │       │   └── sync_broker_deals.py   # Closed trade reconciliation & P&L sync
 │       └── server.py                  # FastMCP tools interface
 └── tests/
@@ -159,11 +180,26 @@ python3 -c "from gold_trader.brokers.socket_broker import SocketBroker; print('B
 # Check MT5 Account Balance & Margin
 python3 -c "from gold_trader.brokers.socket_broker import SocketBroker; print(SocketBroker().get_account_info())"
 
-# Check Systemd User Services
-systemctl --user status mt5-bridge.service gold-auto-trader.service btc-auto-trader.service --no-pager
+# Check All Systemd User Services
+systemctl --user status mt5-bridge.service gold-auto-trader.service btc-auto-trader.service eth-auto-trader.service --no-pager
 ```
 
-### 2. Verify OpenBB Macro & News Guard
+### 2. Run Production Walk-Forward Backtesting
+```bash
+# Run Ethereum Backtest (with London/NY Session Filter & ML Gate)
+python3 scripts/run_production_backtest.py --asset eth --ml-prob 0.44 --session-filter
+
+# Run Bitcoin Backtest (24/7 Continuous)
+python3 scripts/run_production_backtest.py --asset btc --ml-prob 0.44
+
+# Run Gold Backtest
+python3 scripts/run_production_backtest.py --asset gold --ml-prob 0.44
+
+# Run Complete Multi-Asset Comparative Benchmark Suite
+python3 scripts/run_production_backtest.py --all
+```
+
+### 3. Verify OpenBB Macro & News Catalyst Guard
 ```bash
 # Check if current time is within high-impact news blackout window (±15m)
 python3 -c "from gold_trader.core.openbb_feed import check_high_impact_news_window; print(check_high_impact_news_window(buffer_minutes=15))"
@@ -175,22 +211,28 @@ python3 -c "from gold_trader.core.openbb_feed import fetch_openbb_macro_data; pr
 python3 -c "from gold_trader.core.macro import analyze_macro_drivers; print(analyze_macro_drivers())"
 ```
 
-### 3. Check Compounding Ladder States
+### 4. Check Compounding Ladder States
 ```bash
 # Gold Compounding Ladder Status
 python3 -c "from gold_trader.core.compounding_ladder import CompoundingLadderManager; print(CompoundingLadderManager().get_status())"
 
 # Bitcoin Compounding Ladder Status
 python3 -c "from gold_trader.core.compounding_ladder import CompoundingLadderManager; print(CompoundingLadderManager(state_file='~/.gold_trading_data/btc_compounding_ladder_state.json').get_status())"
+
+# Ethereum Compounding Ladder Status
+python3 -c "from gold_trader.core.compounding_ladder import CompoundingLadderManager; print(CompoundingLadderManager(state_file='~/.gold_trading_data/eth_compounding_ladder_state.json').get_status())"
 ```
 
-### 4. Monitor Live Daemon Logs
+### 5. Monitor Live Daemon Execution Logs
 ```bash
 # Tail Gold trading logs
 tail -f auto_trader.log
 
 # Tail Bitcoin trading logs
 tail -f btc_auto_trader.log
+
+# Tail Ethereum trading logs
+tail -f eth_auto_trader.log
 
 # Tail MT5 Bridge logs
 tail -f bridge.log
