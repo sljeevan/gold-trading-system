@@ -312,7 +312,7 @@ class GoldAutoTrader:
                 symbol=symbol,
                 timeframe=tf,
                 ladder_manager=self.ladder_manager,
-                min_win_probability=0.50,
+                min_win_probability=self.config.ml_min_probability,
                 use_pullback_limit=self.config.use_pullback_limit if not is_hybrid else False,
                 pullback_discount_pips=self.config.pullback_discount_pips if not is_hybrid else 0.0,
                 strategy_mode=strat_mode,
@@ -326,9 +326,9 @@ class GoldAutoTrader:
                 return {"status": "ERROR", "message": setup.get("error"), "timestamp": now}
 
             order_type = str(setup.get("order_type", "MARKET" if is_hybrid else ("LIMIT" if self.config.use_pullback_limit else "MARKET")))
-            price = float(setup.get("entry_price", setup.get("market_price", 0.0)))
-            bias = str(setup.get("bias", "NEUTRAL"))
-            is_flat = (self.ladder_manager.ladder_mode == "FLAT_RISK")
+            price = float(setup.get("entry_price") or setup.get("market_price") or setup.get("setup_details", {}).get("entry_price") or setup.get("bracket_order_specs", {}).get("market_price") or 0.0)
+            bias = str(setup.get("bias") or setup.get("setup_details", {}).get("bias", "NEUTRAL"))
+            is_flat = (self.config.mode == "FLAT_RISK_TOUCH") or (self.config.flat_risk and not str(self.config.mode).startswith("COMPOUNDING"))
             default_name = (
                 f"1H Donchian 10 Touch (Flat Risk ${self.config.fixed_risk_usd:.2f})"
                 if (is_touch and is_flat)
@@ -432,6 +432,8 @@ class GoldAutoTrader:
 
         if action == "HOLD":
             rejection_reasons.append("No actionable trigger pattern detected.")
+        elif action == "PASS":
+            rejection_reasons.append(str(setup.get("reason", "Filtered by ML gatekeeper or minimum probability threshold.")))
 
         if quality_score < self.config.min_quality_score:
             rejection_reasons.append(f"Quality score {quality_score} < minimum {self.config.min_quality_score}.")
@@ -588,7 +590,13 @@ class GoldAutoTrader:
                             tp1 = round(float(tp1), 2)
                             tp2 = tp1
 
-                    order_comment = f"AI-FlatRisk-{symbol}"
+                    is_flat = (self.config.mode == "FLAT_RISK_TOUCH") or (self.config.flat_risk and not str(self.config.mode).startswith("COMPOUNDING"))
+                    if is_flat:
+                        order_comment = f"AI-FlatRisk-{symbol}"
+                    elif self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH"):
+                        order_comment = f"AI-Compounding-L{level}"
+                    else:
+                        order_comment = f"AI-Auto-{setup_name[:12]}"
                     actual_tp = tp2 if (self.config.enable_partial_scale_out or self.config.enable_runner_trailing or self.config.mode in ("DONCHIAN_BREAKOUT", "DONCHIAN_MOMENTUM_HYBRID", "HYBRID")) and tp2 else tp1
                     order_result = self.broker.place_order(
                         symbol="GOLD" if "GOLD" in symbol else symbol,

@@ -7,12 +7,18 @@ import os
 import shutil
 import tempfile
 
-from gold_trader.rl.data_processor import GoldRLDataProcessor
-from gold_trader.rl.gold_env import GoldTradingEnv
-from gold_trader.rl.trainer import GoldRLTrainer
-from gold_trader.rl.predictor import GoldRLPredictor
+try:
+    import gymnasium
+    from gold_trader.rl.data_processor import GoldRLDataProcessor
+    from gold_trader.rl.gold_env import GoldTradingEnv
+    from gold_trader.rl.trainer import GoldRLTrainer
+    from gold_trader.rl.predictor import GoldRLPredictor
+    HAS_RL = True
+except ImportError:
+    HAS_RL = False
 
 
+@unittest.skipUnless(HAS_RL, "gymnasium or RL dependencies not installed")
 class TestGoldRLComponents(unittest.TestCase):
 
     def setUp(self):

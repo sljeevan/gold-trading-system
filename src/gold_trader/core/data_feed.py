@@ -33,14 +33,16 @@ def fetch_gold_candles(
     Periods: '1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y'
     """
     clean_sym = symbol.upper().strip()
-    # 1. If Gold symbol on intraday/swing timeframe, check live MT5 broker for real-time rates
-    if clean_sym in ("XAUUSD", "GOLD") and interval in ("1m", "5m", "15m", "30m", "1h") and period in ("1d", "5d", "1mo", "3mo"):
+    is_live_broker_sym = clean_sym in ("XAUUSD", "GOLD", "BTCUSD", "BTC", "ETHUSD", "ETH")
+    broker_sym = "GOLD" if clean_sym in ("XAUUSD", "GOLD") else ("BTCUSD" if clean_sym == "BTC" else ("ETHUSD" if clean_sym == "ETH" else clean_sym))
+    # 1. If Gold or Crypto symbol on intraday/swing timeframe, check live MT5 broker for real-time rates
+    if is_live_broker_sym and interval in ("1m", "5m", "15m", "30m", "1h") and period in ("1d", "5d", "1mo", "3mo"):
         try:
             from gold_trader.brokers.socket_broker import SocketBroker
             broker = SocketBroker()
             count_map = {"1d": 96, "5d": 350, "1mo": 400, "3mo": 500}
             count = count_map.get(period, 300)
-            rates = broker.get_rates(symbol="GOLD", timeframe=interval, count=count)
+            rates = broker.get_rates(symbol=broker_sym, timeframe=interval, count=count)
             if rates and len(rates) >= 50:
                 return rates
         except Exception:
@@ -84,12 +86,12 @@ def fetch_gold_candles(
         })
 
     # Append fresh live broker candles newer than the last Yahoo candle
-    if clean_sym in ("XAUUSD", "GOLD") and interval in ("1m", "5m", "15m", "30m", "1h") and candles:
+    if is_live_broker_sym and interval in ("1m", "5m", "15m", "30m", "1h") and candles:
         try:
             from gold_trader.brokers.socket_broker import SocketBroker
             broker = SocketBroker()
             latest_date = candles[-1]["date"]
-            live_rates = broker.get_rates(symbol="GOLD", timeframe=interval, count=250)
+            live_rates = broker.get_rates(symbol=broker_sym, timeframe=interval, count=250)
             if live_rates:
                 for r in live_rates:
                     if r.get("date", "") > latest_date:

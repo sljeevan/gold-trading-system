@@ -529,8 +529,11 @@ def generate_donchian_breakout_setup(
         reasons.append("Insufficient data for Donchian Channel calculation.")
 
     # Stop Loss & Take Profit Brackets
-    # SL = 1.5 * ATR (min $8.00), TP1 = 1.2R, TP2 = 2.0R
-    stop_distance = max(round(1.5 * atr_val, 2), 8.00)
+    # SL = 1.5 * ATR (min $8.00 Gold, $500 BTC, $20 ETH), TP1 = 1.2R, TP2 = 2.0R
+    is_btc = "BTC" in symbol.upper()
+    is_eth = "ETH" in symbol.upper()
+    min_stop = 500.0 if is_btc else (20.0 if is_eth else 8.00)
+    stop_distance = max(round(1.5 * atr_val, 2), min_stop)
     stop_distance_pips = round(stop_distance * 10, 1)
 
     if action == "BUY":
@@ -942,7 +945,7 @@ def generate_compounding_ladder_setup(
     ml_result = None
     try:
         from gold_trader.core.ml_filter import GoldMLPredictor
-        predictor = GoldMLPredictor()
+        predictor = GoldMLPredictor(symbol=symbol)
         candles_entry = fetch_gold_candles(symbol, period="1mo", interval=timeframe)
         if len(candles_entry) >= 100:
             ml_result = predictor.predict_trade_probability(
@@ -956,10 +959,23 @@ def generate_compounding_ladder_setup(
 
     is_high_conviction = (win_prob >= min_win_probability)
 
+    default_setup_name = (
+        "1H Donchian + Momentum Hybrid Compounding"
+        if is_hybrid_1h
+        else f"{timeframe} EMA 9/21 Value Zone Pullback"
+    )
+
     if not is_high_conviction:
         return {
             "status": "REJECTED_BY_ML_GATE",
             "action": "PASS",
+            "symbol": symbol.upper(),
+            "level": current_level,
+            "market_price": market_price,
+            "entry_price": market_price,
+            "candle_time": setup_data.get("candle_time"),
+            "bias": setup_data.get("bias", "NEUTRAL"),
+            "setup_name": setup_data.get("setup_name", default_setup_name),
             "reason": f"Predicted win probability ({win_prob:.1%}) is below threshold ({min_win_probability:.1%}). Account risk preserved.",
             "win_probability": win_prob,
             "ml_evaluation": ml_result,
@@ -968,12 +984,6 @@ def generate_compounding_ladder_setup(
             "setup_details": setup_data,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-
-    default_setup_name = (
-        "1H Donchian + Momentum Hybrid Compounding"
-        if is_hybrid_1h
-        else f"{timeframe} EMA 9/21 Value Zone Pullback"
-    )
 
     return {
         "status": "APPROVED_HIGH_CONVICTION",
