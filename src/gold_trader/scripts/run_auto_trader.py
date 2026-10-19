@@ -30,10 +30,12 @@ def main():
     parser.add_argument(
         "--mode",
         default="COMPOUNDING_TOUCH",
-        choices=["COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH", "STANDARD_SWING", "DONCHIAN_BREAKOUT", "DONCHIAN_MOMENTUM_HYBRID"],
+        choices=["COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH", "FLAT_RISK_TOUCH", "STANDARD_SWING", "DONCHIAN_BREAKOUT", "DONCHIAN_MOMENTUM_HYBRID"],
         help="Trading mode",
     )
     parser.add_argument("--interval-seconds", type=int, default=60, help="Scan interval in seconds")
+    parser.add_argument("--flat-risk", action=argparse.BooleanOptionalAction, default=False, help="Disable compounding ladder and enforce fixed dollar risk on $1,000 baseline")
+    parser.add_argument("--fixed-risk-usd", type=float, default=75.44, help="Fixed dollar risk per trade when in flat risk mode (default: $75.44)")
     parser.add_argument("--starting-capital", "--initial-capital", type=float, default=None, help="Reset or configure starting capital for compounding ladder (e.g. 1000.0)")
     parser.add_argument("--ladder-level", type=int, default=None, help="Set starting level (1-37) for compounding ladder (e.g. 18 for $1000)")
     parser.add_argument("--min-rr", type=float, default=1.25, help="Minimum Risk-Reward ratio (e.g. 1.25 for High-Velocity Touch)")
@@ -69,35 +71,42 @@ def main():
 
     args = parser.parse_args()
 
-    target_ladder_file = args.ladder_state_file or (
-        "~/.gold_trading_data/btc_compounding_ladder_state.json"
-        if "BTC" in args.symbol.upper()
-        else "~/.gold_trading_data/compounding_ladder_state.json"
-    )
+    if "BTC" in args.symbol.upper():
+        target_ladder_file = args.ladder_state_file or "~/.gold_trading_data/btc_compounding_ladder_state.json"
+    elif "ETH" in args.symbol.upper():
+        target_ladder_file = args.ladder_state_file or "~/.gold_trading_data/eth_compounding_ladder_state.json"
+    else:
+        target_ladder_file = args.ladder_state_file or "~/.gold_trading_data/compounding_ladder_state.json"
+
+    is_flat_risk = args.flat_risk or (args.mode == "FLAT_RISK_TOUCH")
 
     if args.starting_capital is not None:
         from gold_trader.core.compounding_ladder import CompoundingLadderManager
         mgr = CompoundingLadderManager(
             state_file=target_ladder_file,
-            ladder_mode="NOISE_ADAPTIVE_LADDER",
-            loss_policy="PROGRESSIVE_RATCHET",
+            ladder_mode="FLAT_RISK" if is_flat_risk else "NOISE_ADAPTIVE_LADDER",
+            loss_policy="ONE_STEP_LADDER" if is_flat_risk else "PROGRESSIVE_RATCHET",
+            fixed_risk_usd=args.fixed_risk_usd,
         )
         status = mgr.reset_ladder(starting_balance=args.starting_capital, reset_stats=True)
-        logger.info(f"🪜 Compounding Ladder reset to starting capital ${args.starting_capital:.2f} at Level {status['current_level']} (Target balance: ${status['current_balance']:.2f})")
+        logger.info(f"🪜 Capital state reset to starting balance ${args.starting_capital:.2f} (Target balance: ${status['current_balance']:.2f})")
     elif args.ladder_level is not None:
         from gold_trader.core.compounding_ladder import CompoundingLadderManager
         mgr = CompoundingLadderManager(
             state_file=target_ladder_file,
-            ladder_mode="NOISE_ADAPTIVE_LADDER",
-            loss_policy="PROGRESSIVE_RATCHET",
+            ladder_mode="FLAT_RISK" if is_flat_risk else "NOISE_ADAPTIVE_LADDER",
+            loss_policy="ONE_STEP_LADDER" if is_flat_risk else "PROGRESSIVE_RATCHET",
+            fixed_risk_usd=args.fixed_risk_usd,
         )
         status = mgr.set_level(args.ladder_level)
-        logger.info(f"🪜 Compounding Ladder manually configured to Level {status['current_level']} (Target balance: ${status['current_balance']:.2f})")
+        logger.info(f"🪜 Ladder Level manually configured to Level {status['current_level']} (Target balance: ${status['current_balance']:.2f})")
 
     cfg = AutoTraderConfig(
         symbol=args.symbol,
         timeframe=args.timeframe,
         mode=args.mode,
+        flat_risk=is_flat_risk,
+        fixed_risk_usd=args.fixed_risk_usd,
         risk_pct_per_trade=args.risk_pct,
         min_risk_reward=args.min_rr,
         min_quality_score=args.min_quality,
@@ -118,7 +127,10 @@ def main():
         partial_scale_out_pct=args.partial_scale_out_pct,
         scale_out_r=args.scale_out_r,
         enable_runner_trailing=args.enable_runner_trailing,
-        runner_trail_buffer_usd=(350.00 if "BTC" in args.symbol.upper() and args.runner_trail_buffer == 4.50 else args.runner_trail_buffer),
+        runner_trail_buffer_usd=(
+            350.00 if "BTC" in args.symbol.upper() and args.runner_trail_buffer == 4.50
+            else (10.00 if "ETH" in args.symbol.upper() and args.runner_trail_buffer == 4.50 else args.runner_trail_buffer)
+        ),
         runner_target_2_multiplier=args.runner_target_2_multiplier,
         enable_news_catalyst_guard=args.enable_news_catalyst_guard,
         news_guard_buffer_minutes=args.news_guard_buffer_minutes,
@@ -144,7 +156,12 @@ def main():
     logger.info(f"   Auto Execute: {cfg.auto_execute} | Max Open: {cfg.max_open_positions}")
     logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
     logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (Buffer: ${cfg.runner_trail_buffer_usd:.2f} | T2: {cfg.runner_target_2_multiplier:.2f}R)")
-    if cfg.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH"):
+    if cfg.flat_risk or cfg.mode == "FLAT_RISK_TOUCH" or trader.ladder_manager.ladder_mode == "FLAT_RISK":
+        l_stat = trader.ladder_manager.get_status()
+        logger.info(f"🎯 Execution Sizing: FLAT RISK (Compounding Ladder Disabled)")
+        logger.info(f"   Capital Baseline: ${l_stat.get('starting_balance', 1000.0):.2f} | Fixed Risk: ${cfg.fixed_risk_usd:.2f} per trade")
+        logger.info(f"   Current Balance: ${l_stat.get('current_balance', 1000.0):.2f} | Expected Gain: +${cfg.fixed_risk_usd * 1.5:.2f} (1.5R)")
+    elif cfg.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH"):
         l_stat = trader.ladder_manager.get_status()
         next_sp = l_stat.get("next_trade_specs", {})
         logger.info(f"🪜 Compounding Mode: {l_stat.get('ladder_mode')} (Policy: {l_stat.get('loss_policy')})")

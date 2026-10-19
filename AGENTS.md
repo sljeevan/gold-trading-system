@@ -53,7 +53,7 @@ The core quantitative scaling mechanism is managed by [`CompoundingLadderManager
 
 - **Matrix**: 30 discrete exponential levels scaling from **$20.00 micro-seed** to **$52,384.00**, plus a 37-level **Noise-Adaptive Matrix** ($100 to $5,337.29).
 - **State File**: [`~/.gold_trading_data/compounding_ladder_state.json`](file:///home/mcpuser/.gold_trading_data/compounding_ladder_state.json)
-- **Active System Capital Baseline**: **$1,000.00 Starting Capital** | Active Level: **Level 18 (Expansion Phase)** | Planned Risk: **$75.44 (8.0%)** | Target Gain: **+$113.15 (1.5R)** | Target Balance: **$1,056.10** | Protected Capital Floor: **$700.00** (`PROGRESSIVE_RATCHET`).
+- **Active System Capital Baseline**: **$1,000.00 Starting Capital** | Execution Mode: **`FLAT_RISK` (Compounding Ladder Disabled)** | Fixed Planned Risk: **$75.44 (7.54% – 8.0%)** | Target Gain: **+$113.16 (1.5R)** | Compounding: **Disabled (Flat Risk on $1,000 Baseline)**.
 - **Sample Level Specs**:
   - Level 1: $20.00 Starting Balance | Target Gain: +$6.00 (30%) | Planned Risk: $5.00 (23%) | Target: $26.00.
   - Level 10: $212.00 Starting Balance | Target Gain: +$64.00 | Planned Risk: $49.00.
@@ -391,20 +391,22 @@ Following systematic combinatorial walk-forward optimization across 35 parameter
   - **Target 2 Extension Multiplier**: Expanded from `2.50R` ➔ **`3.00R`**.
   - **Initial Stop Loss**: Maintained at $\max(1.5 \times \text{ATR}, \$500.00)$.
 
-### 10.2 Empirical 2-Year Walk-Forward Backtest Results (11,429 Gold bars / 17,489 BTC bars)
-| Asset / Configuration Mode | Trades | Win Rate % | Profit Factor | Net R-Multiple | Net Points | Payoff Ratio | Max Drawdown | Compounding Ladder ($1,000 Seed) |
+### 10.2 Empirical 2-Year Walk-Forward Backtest Results (Zero-Lookahead Lagged Features)
+Evaluated across 11,434 Gold bars / 17,489 BTC bars with strictly lagged features (bar $i-1$) to eliminate all intrabar lookahead bias:
+
+| Asset / Configuration Mode | Trades | Win Rate % | Profit Factor | Net R-Multiple | Payoff Ratio | Max Drawdown | Flat Risk Net P&L ($1k Baseline) | Compounding ($1,000 Seed) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 🥇 **Gold: Live Production (TSL $4.50, T2 3.0R, ML)** | **719** | **63.0%** | <span style="color:green">**2.01**</span> | <span style="color:green">**+288.8R**</span> | <span style="color:green">**+7,599.0**</span> | **1.23:1** | <span style="color:green">**53.8%**</span> | **$429.4 Billion** |
-| 🥈 **Gold: Previous Baseline (TSL $6.00, T2 2.5R, ML)** | 719 | 63.0% | 1.95 | +269.7R | +7,078.2 | 1.18:1 | 70.4% | $110.5 Billion |
-| 🥉 **Gold: Raw Baseline (No ML Filter)** | 1,375 | 54.8% | 1.40 | +294.7R | +7,728.4 | 1.22:1 | 73.8% | $111.8 Million |
+| 🥇 **Gold: Live Config (TSL $4.50, T2 3.0R, ML 0.44)** | **1,012** | **55.6%** | <span style="color:green">**1.47**</span> | <span style="color:green">**+243.7R**</span> | **1.23:1** | **89.4%** | <span style="color:green">**+$18,384.09 (+1,838%)**</span> | **$709.7 Million** |
+| 🥈 **Gold: Strict ML Gate (ML P >= 0.52)** | 763 | 56.2% | 1.54 | +192.3R | 1.23:1 | 74.9% | +$14,506.94 (+1,451%) | $7.2 Million |
+| 🥉 **Gold: Raw Baseline (No ML Filter)** | 1,375 | 54.8% | 1.40 | +294.7R | 1.22:1 | 73.8% | +$22,234.22 (+2,223%) | $111.8 Million |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 🥇 **Bitcoin: Live Production (TSL $350, T2 3.0R, ML)** | **1,566** | **65.1%** | <span style="color:green">**2.22**</span> | <span style="color:green">**+635.4R**</span> | <span style="color:green">**+483,205.3**</span> | **1.16:1** | <span style="color:green">**58.9%**</span> | **Exponential Compounding** |
-| 🥈 **Bitcoin: Previous Baseline (TSL $500, T2 2.5R, ML)** | 1,566 | 65.1% | 2.09 | +568.9R | +433,444.4 | 1.09:1 | 59.6% | Exponential Compounding |
-| 🥉 **Bitcoin: Raw Baseline (No ML Filter)** | 3,150 | 53.6% | 1.31 | +474.9R | +361,847.1 | 1.15:1 | 97.0% | $159.4 Trillion |
+| 🥇 **Bitcoin: Live Config (TSL $350, T2 3.0R, ML 0.44)** | **2,514** | **54.1%** | <span style="color:green">**1.34**</span> | <span style="color:green">**+403.3R**</span> | **1.15:1** | **93.8%** | <span style="color:green">**+$30,428.38 (+3,043%)**</span> | **$6.3 Trillion** |
+| 🥈 **Bitcoin: Strict ML Gate (ML P >= 0.52)** | 1,853 | 55.1% | 1.41 | +337.4R | 1.15:1 | 87.2% | +$25,452.13 (+2,545%) | $399.5 Billion |
+| 🥉 **Bitcoin: Raw Baseline (No ML Filter)** | 3,150 | 53.6% | 1.31 | +473.1R | 1.15:1 | 97.0% | +$35,692.16 (+3,569%) | $100.4 Trillion |
 
 ### 10.3 Backtest & Optimization CLI Commands
 ```bash
-# 1. Run live production backtest across both Gold & Bitcoin
+# 1. Run live production backtest across Gold, Bitcoin & Ethereum
 python3 scripts/run_production_backtest.py
 
 # 2. Run SL and TSL combinatorial grid optimizer
@@ -412,6 +414,47 @@ python3 scripts/optimize_sl_tsl_ml.py
 
 # 3. View saved backtest results
 cat ~/.gold_trading_data/live_production_backtest_results.json
+```
+
+---
+
+## 11. Ethereum (ETHUSD) Autonomous Trading System & Live Deployment
+
+The platform features full concurrent support for **Ethereum (ETHUSD)** running alongside Gold and Bitcoin on the XM MT5 Demo terminal.
+
+### 11.1 Architecture & Isolation Model
+- **Capital Baseline**: **$1,000.00 Starting Seed**
+- **Execution Mode**: **`FLAT_RISK`** ($75.44 fixed dollar risk per trade, Compounding Ladder Disabled)
+- **Session Filter**: **London/NY Session Filter (07:00–19:00 UTC)** (Slashes max drawdown to 13.9%–15.4% and lifts Profit Factor to 1.54)
+- **ML Meta-Labeling**: `LightGBM` walk-forward classifier (`ml-min-prob 0.44`, model: `~/.gold_trading_data/models/eth_ml_barrier.joblib`)
+- **State File**: [`~/.gold_trading_data/eth_compounding_ladder_state.json`](file:///home/mcpuser/.gold_trading_data/eth_compounding_ladder_state.json)
+- **SQLite Database**: [`~/.gold_trading_data/eth_auto_trader.db`](file:///home/mcpuser/.gold_trading_data/eth_auto_trader.db) (Completely isolated SQLite instance preventing database locks)
+- **Execution Log**: [`eth_auto_trader.log`](file:///home/mcpuser/MCP/gold-trading-system/eth_auto_trader.log)
+- **Systemd Service**: `eth-auto-trader.service` (User service, auto-restarted, parallel with `gold-auto-trader.service` and `btc-auto-trader.service`)
+
+### 11.2 Microstructure & Sizing Rules for Ethereum
+| Parameter | Value | Rationale |
+| :--- | :--- | :--- |
+| **Contract Size** | `1.0` (1 lot = 1 ETH) | Standard MT5 crypto specification |
+| **Minimum Stop Loss** | `$20.00` | Minimum ATR clearance above intraday noise (~$21 1H ATR) |
+| **Break-Even Buffer** | `+$2.00` | Clears broker spread ($1.20–$2.50) without whip-out |
+| **Runner Trailing Buffer** | `$10.00` | Dynamic buffer behind peak excursion locking Stage 2 runner gains |
+| **Target 2 Multiplier** | `3.00 R` | Outsized trend momentum target |
+| **Minimum Lot Size** | `0.02` | XM MT5 minimum volume for ETHUSD |
+
+### 11.3 Fast CLI Operational Commands for Ethereum
+```bash
+# 1. Check Ethereum Auto-Trader Status
+systemctl --user status eth-auto-trader.service --no-pager
+
+# 2. Start Ethereum Auto-Trader Service
+bash scripts/start_eth_auto_trader.sh
+
+# 3. Stop Ethereum Auto-Trader Service
+bash scripts/stop_eth_auto_trader.sh
+
+# 4. Tail Live Ethereum Daemon Execution Log
+tail -f eth_auto_trader.log
 ```
 
 ---

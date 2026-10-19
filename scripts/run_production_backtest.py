@@ -1,10 +1,10 @@
 """
-Comprehensive Production Backtest Engine for Gold (XAU/USD) & Bitcoin (BTC/USD).
+Comprehensive Production Backtest Engine for Gold (XAU/USD), Bitcoin (BTC/USD) & Ethereum (ETH/USD).
 Simulates the live production system with newly deployed parameters:
 - COMPOUNDING_TOUCH (1H Donchian 10 Touch + 50 EMA + SuperTrend)
 - Two-Stage Execution (50% scale-out @ +1.0R, BE shift, Runner Trailing Stop to 3.0R)
 - Walk-Forward LightGBM Meta-Labeling Gate (P >= 0.52)
-- 37-Level Noise-Adaptive Compounding Ladder ($1,000 starting seed with progressive ratchet floors)
+- Execution Mode: FLAT RISK ($75.44 fixed risk on $1,000.00 capital baseline, Compounding Ladder Removed)
 """
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ import os
 import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 import lightgbm as lgb
 import numpy as np
@@ -368,7 +370,8 @@ def run_backtest_for_asset(
             max_bars=48,
         )
 
-        features = extract_features(data, i, action)
+        # Strictly extract features from bar i-1 (closed candle prior to entry) to eliminate all intrabar lookahead
+        features = extract_features(data, i - 1, action)
         if features is None:
             continue
 
@@ -431,7 +434,7 @@ def compute_performance(
     trades: List[Dict[str, Any]],
     ml_threshold: Optional[float] = None,
     starting_balance: float = 1000.0,
-    base_risk_pct: float = 8.0,
+    planned_risk_usd: float = 75.44,
 ) -> Dict[str, Any]:
     selected = trades
     if ml_threshold is not None:
@@ -439,7 +442,21 @@ def compute_performance(
 
     total_trades = len(selected)
     if total_trades == 0:
-        return {"total_trades": 0, "final_balance": starting_balance}
+        return {
+            "symbol": symbol,
+            "total_trades": 0,
+            "starting_balance": starting_balance,
+            "final_balance": starting_balance,
+            "net_pnl_usd": 0.0,
+            "total_return_pct": 0.0,
+            "win_rate_pct": 0.0,
+            "profit_factor": 0.0,
+            "net_r": 0.0,
+            "payoff_ratio": 0.0,
+            "max_drawdown_pct": 0.0,
+            "max_drawdown_usd": 0.0,
+            "sharpe_ratio": 0.0,
+        }
 
     wins = [t for t in selected if t["pnl_r"] > 0]
     losses = [t for t in selected if t["pnl_r"] <= 0]
@@ -461,35 +478,35 @@ def compute_performance(
         et = t.get("exit_type", "UNKNOWN")
         exit_counts[et] = exit_counts.get(et, 0) + 1
 
-    # Compounding Ladder Simulation
+    # Standard Realistic Flat Risk Execution Model ($75.44 fixed risk on $1,000 baseline)
     balance = starting_balance
     peak_balance = starting_balance
     max_dd_pct = 0.0
-    ratchet_floor = 700.0
+    max_dd_usd = 0.0
+    trade_pnls = []
 
     for t in selected:
-        if balance >= 4000.0:
-            ratchet_floor = max(ratchet_floor, 3000.0)
-        elif balance >= 2500.0:
-            ratchet_floor = max(ratchet_floor, 1800.0)
-        elif balance >= 1000.0:
-            ratchet_floor = max(ratchet_floor, 700.0)
-        elif balance >= 500.0:
-            ratchet_floor = max(ratchet_floor, 350.0)
-        elif balance >= 250.0:
-            ratchet_floor = max(ratchet_floor, 150.0)
-
-        riskable = max(10.0, balance - ratchet_floor)
-        risk_usd = min(balance * (base_risk_pct / 100.0), riskable)
-        trade_pnl_usd = risk_usd * t["pnl_r"]
-        balance += trade_pnl_usd
-        balance = max(balance, 10.0)
-
+        trade_pnl = planned_risk_usd * t["pnl_r"]
+        trade_pnls.append(trade_pnl)
+        balance += trade_pnl
+        balance = max(balance, 0.0)
         peak_balance = max(peak_balance, balance)
-        dd = (peak_balance - balance) / peak_balance * 100.0
-        max_dd_pct = max(max_dd_pct, dd)
+        dd_usd = peak_balance - balance
+        dd_pct = (dd_usd / peak_balance * 100.0) if peak_balance > 0 else 0.0
+        max_dd_usd = max(max_dd_usd, dd_usd)
+        max_dd_pct = max(max_dd_pct, dd_pct)
 
-    total_return_pct = ((balance - starting_balance) / starting_balance) * 100.0
+    net_pnl_usd = balance - starting_balance
+    total_return_pct = (net_pnl_usd / starting_balance) * 100.0
+
+    # Sharpe ratio estimate (annualized over 2-year horizon)
+    sharpe = 0.0
+    if len(trade_pnls) > 1:
+        mean_pnl = np.mean(trade_pnls)
+        std_pnl = np.std(trade_pnls)
+        if std_pnl > 0:
+            trades_per_year = len(trade_pnls) / 2.0
+            sharpe = (mean_pnl / std_pnl) * math.sqrt(max(1.0, trades_per_year))
 
     return {
         "symbol": symbol,
@@ -505,20 +522,25 @@ def compute_performance(
         "payoff_ratio": round(payoff_ratio, 2),
         "avg_duration_hours": round(avg_duration_bars, 1),
         "exit_counts": exit_counts,
+        "starting_balance": starting_balance,
+        "planned_risk_usd": planned_risk_usd,
         "final_balance": round(balance, 2),
+        "net_pnl_usd": round(net_pnl_usd, 2),
         "total_return_pct": round(total_return_pct, 1),
         "peak_balance": round(peak_balance, 2),
         "max_drawdown_pct": round(max_dd_pct, 1),
+        "max_drawdown_usd": round(max_dd_usd, 2),
+        "sharpe_ratio": round(sharpe, 2),
     }
 
 
 def main():
-    print("=" * 90)
-    print("🚀 QUANTITATIVE PRODUCTION BACKTEST: GOLD (XAU/USD) & BITCOIN (BTC/USD)")
-    print("=" * 90)
+    print("=" * 95)
+    print("🚀 QUANTITATIVE PRODUCTION BACKTEST: LIVE DEPLOYED CONFIGURATION (2 YEARS)")
+    print("=" * 95)
 
     # 1. Backtest Gold (XAUUSD)
-    print("\n[1/2] Backtesting Spot Gold (XAU/USD)...")
+    print("\n[1/3] Backtesting Spot Gold (XAU/USD)...")
     gold_data = run_backtest_for_asset(
         symbol="XAUUSD",
         sl_atr_mult=1.5,
@@ -529,24 +551,12 @@ def main():
         session_filter=True,
     )
 
+    gold_live = compute_performance("XAUUSD", gold_data["all_trades"], ml_threshold=0.44)
+    gold_strict = compute_performance("XAUUSD", gold_data["all_trades"], ml_threshold=0.52)
     gold_raw = compute_performance("XAUUSD", gold_data["all_trades"], ml_threshold=None)
-    gold_ml = compute_performance("XAUUSD", gold_data["all_trades"], ml_threshold=0.52)
-
-    # Also compute Gold baseline for side-by-side comparison (TSL $6, TP2 2.5R)
-    print("  Calculating Gold baseline comparison...")
-    gold_base_data = run_backtest_for_asset(
-        symbol="XAUUSD",
-        sl_atr_mult=1.5,
-        min_sl_dist=8.00,
-        tsl_buffer=6.00,
-        tp2_mult=2.50,
-        be_offset=0.50,
-        session_filter=True,
-    )
-    gold_base_ml = compute_performance("XAUUSD", gold_base_data["all_trades"], ml_threshold=0.52)
 
     # 2. Backtest Bitcoin (BTCUSD)
-    print("\n[2/2] Backtesting Bitcoin (BTC/USD)...")
+    print("\n[2/3] Backtesting Bitcoin (BTC/USD)...")
     btc_data = run_backtest_for_asset(
         symbol="BTCUSD",
         sl_atr_mult=1.5,
@@ -557,50 +567,92 @@ def main():
         session_filter=False,
     )
 
+    btc_live = compute_performance("BTCUSD", btc_data["all_trades"], ml_threshold=0.44)
+    btc_strict = compute_performance("BTCUSD", btc_data["all_trades"], ml_threshold=0.52)
     btc_raw = compute_performance("BTCUSD", btc_data["all_trades"], ml_threshold=None)
-    btc_ml = compute_performance("BTCUSD", btc_data["all_trades"], ml_threshold=0.52)
 
-    print("  Calculating Bitcoin baseline comparison...")
-    btc_base_data = run_backtest_for_asset(
-        symbol="BTCUSD",
+    # 3. Backtest Ethereum (ETHUSD)
+    print("\n[3/3] Backtesting Ethereum (ETH/USD)...")
+    # 3a. 24/7 Full Crypto Schedule
+    eth_data_247 = run_backtest_for_asset(
+        symbol="ETHUSD",
         sl_atr_mult=1.5,
-        min_sl_dist=500.00,
-        tsl_buffer=500.00,
-        tp2_mult=2.50,
-        be_offset=30.00,
+        min_sl_dist=20.00,
+        tsl_buffer=10.00,
+        tp2_mult=3.00,
+        be_offset=2.00,
         session_filter=False,
     )
-    btc_base_ml = compute_performance("BTCUSD", btc_base_data["all_trades"], ml_threshold=0.52)
+    eth_live_247 = compute_performance("ETHUSD", eth_data_247["all_trades"], ml_threshold=0.44)
+    eth_strict_247 = compute_performance("ETHUSD", eth_data_247["all_trades"], ml_threshold=0.52)
+    eth_raw_247 = compute_performance("ETHUSD", eth_data_247["all_trades"], ml_threshold=None)
 
-    # 3. Print Results
-    print("\n" + "=" * 125)
-    print("🏆 FINAL PRODUCTION PERFORMANCE LEADERBOARD (2 YEARS HISTORICAL WALK-FORWARD)")
-    print("=" * 125)
-    print(f"{'Asset / Configuration':<42} | {'Trades':<6} | {'Win %':<6} | {'PF':<5} | {'Net R':<8} | {'Payoff':<6} | {'Max DD':<7} | {'Compounding ($1k Seed)':<22}")
-    print("-" * 125)
+    # 3b. London / NY Core Session Filter (07:00-19:00 UTC)
+    print("  Evaluating Ethereum with London/NY Core Session Filter (07:00-19:00 UTC)...")
+    eth_data_session = run_backtest_for_asset(
+        symbol="ETHUSD",
+        sl_atr_mult=1.5,
+        min_sl_dist=20.00,
+        tsl_buffer=10.00,
+        tp2_mult=3.00,
+        be_offset=2.00,
+        session_filter=True,
+    )
+    eth_live_session = compute_performance("ETHUSD", eth_data_session["all_trades"], ml_threshold=0.44)
+    eth_strict_session = compute_performance("ETHUSD", eth_data_session["all_trades"], ml_threshold=0.52)
+    eth_raw_session = compute_performance("ETHUSD", eth_data_session["all_trades"], ml_threshold=None)
 
-    print(f"{'Gold Live Production (TSL $4.50, T2 3.0R, ML)':<42} | {gold_ml['total_trades']:<6} | {gold_ml['win_rate_pct']:>5.1f}% | {gold_ml['profit_factor']:>5.2f} | {gold_ml['net_r']:>+7.1f}R | {gold_ml['payoff_ratio']:>5.2f}:1 | {gold_ml['max_drawdown_pct']:>5.1f}% | ${gold_ml['final_balance']:>13,.2f} ({gold_ml['total_return_pct']:>+6.1f}%)")
-    print(f"{'Gold Previous Baseline (TSL $6.00, T2 2.5R, ML)':<42} | {gold_base_ml['total_trades']:<6} | {gold_base_ml['win_rate_pct']:>5.1f}% | {gold_base_ml['profit_factor']:>5.2f} | {gold_base_ml['net_r']:>+7.1f}R | {gold_base_ml['payoff_ratio']:>5.2f}:1 | {gold_base_ml['max_drawdown_pct']:>5.1f}% | ${gold_base_ml['final_balance']:>13,.2f} ({gold_base_ml['total_return_pct']:>+6.1f}%)")
-    print(f"{'Gold Raw (No ML Filter)':<42} | {gold_raw['total_trades']:<6} | {gold_raw['win_rate_pct']:>5.1f}% | {gold_raw['profit_factor']:>5.2f} | {gold_raw['net_r']:>+7.1f}R | {gold_raw['payoff_ratio']:>5.2f}:1 | {gold_raw['max_drawdown_pct']:>5.1f}% | ${gold_raw['final_balance']:>13,.2f} ({gold_raw['total_return_pct']:>+6.1f}%)")
+    # 4. Print Results Leaderboard (Flat Risk Baseline)
+    print("\n" + "=" * 148)
+    print("🏆 FINAL PRODUCTION PERFORMANCE LEADERBOARD (2 YEARS WALK-FORWARD — FLAT RISK $75.44 ON $1,000 BASELINE)")
+    print("=" * 148)
+    header = f"{'Asset / Configuration':<44} | {'Trades':<6} | {'Win %':<6} | {'PF':<5} | {'Net R':<8} | {'Payoff':<6} | {'Sharpe':<6} | {'Max DD %':<8} | {'Max DD ($)':<11} | {'Net P&L ($)':<14} | {'Final Balance':<14}"
+    print(header)
+    print("-" * 148)
 
-    print("-" * 125)
-    print(f"{'BTC Live Production (TSL $350, T2 3.0R, ML)':<42} | {btc_ml['total_trades']:<6} | {btc_ml['win_rate_pct']:>5.1f}% | {btc_ml['profit_factor']:>5.2f} | {btc_ml['net_r']:>+7.1f}R | {btc_ml['payoff_ratio']:>5.2f}:1 | {btc_ml['max_drawdown_pct']:>5.1f}% | ${btc_ml['final_balance']:>13,.2f} ({btc_ml['total_return_pct']:>+6.1f}%)")
-    print(f"{'BTC Previous Baseline (TSL $500, T2 2.5R, ML)':<42} | {btc_base_ml['total_trades']:<6} | {btc_base_ml['win_rate_pct']:>5.1f}% | {btc_base_ml['profit_factor']:>5.2f} | {btc_base_ml['net_r']:>+7.1f}R | {btc_base_ml['payoff_ratio']:>5.2f}:1 | {btc_base_ml['max_drawdown_pct']:>5.1f}% | ${btc_base_ml['final_balance']:>13,.2f} ({btc_base_ml['total_return_pct']:>+6.1f}%)")
-    print(f"{'BTC Raw (No ML Filter)':<42} | {btc_raw['total_trades']:<6} | {btc_raw['win_rate_pct']:>5.1f}% | {btc_raw['profit_factor']:>5.2f} | {btc_raw['net_r']:>+7.1f}R | {btc_raw['payoff_ratio']:>5.2f}:1 | {btc_raw['max_drawdown_pct']:>5.1f}% | ${btc_raw['final_balance']:>13,.2f} ({btc_raw['total_return_pct']:>+6.1f}%)")
-    print("=" * 125)
+    def row(name, m):
+        return f"{name:<44} | {m['total_trades']:<6} | {m['win_rate_pct']:>5.1f}% | {m['profit_factor']:>5.2f} | {m['net_r']:>+7.1f}R | {m['payoff_ratio']:>5.2f}:1 | {m['sharpe_ratio']:>6.2f} | {m['max_drawdown_pct']:>7.1f}% | ${m['max_drawdown_usd']:>9,.2f} | ${m['net_pnl_usd']:>+12,.2f} | ${m['final_balance']:>12,.2f}"
+
+    print(row("Gold: Live Config (TSL $4.50, T2 3.0R, ML 0.44)", gold_live))
+    print(row("Gold: Strict ML Gate (ML P >= 0.52)", gold_strict))
+    print(row("Gold: Raw Baseline (No ML Filter)", gold_raw))
+
+    print("-" * 148)
+    print(row("BTC: Live Config (TSL $350, T2 3.0R, ML 0.44)", btc_live))
+    print(row("BTC: Strict ML Gate (ML P >= 0.52)", btc_strict))
+    print(row("BTC: Raw Baseline (No ML Filter)", btc_raw))
+
+    print("-" * 148)
+    print(row("ETH: Live Config 24/7 (TSL $10, ML 0.44)", eth_live_247))
+    print(row("ETH: Strict ML 24/7 (ML P >= 0.52)", eth_strict_247))
+    print(row("ETH: Raw Baseline 24/7 (No ML Filter)", eth_raw_247))
+    print(row("ETH: London/NY Session (ML P >= 0.44)", eth_live_session))
+    print(row("ETH: London/NY Session (ML P >= 0.52)", eth_strict_session))
+    print("=" * 148)
 
     # Save summary report to JSON
+    from datetime import timezone
     report = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "gold": {
-            "live_optimized": gold_ml,
-            "previous_baseline": gold_base_ml,
+            "live_config_ml_044": gold_live,
+            "strict_ml_052": gold_strict,
             "raw_no_ml": gold_raw,
         },
         "bitcoin": {
-            "live_optimized": btc_ml,
-            "previous_baseline": btc_base_ml,
+            "live_config_ml_044": btc_live,
+            "strict_ml_052": btc_strict,
             "raw_no_ml": btc_raw,
+        },
+        "ethereum_247": {
+            "live_config_ml_044": eth_live_247,
+            "strict_ml_052": eth_strict_247,
+            "raw_no_ml": eth_raw_247,
+        },
+        "ethereum_session_filtered": {
+            "live_config_ml_044": eth_live_session,
+            "strict_ml_052": eth_strict_session,
+            "raw_no_ml": eth_raw_session,
         },
     }
 

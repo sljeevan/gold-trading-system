@@ -17,14 +17,16 @@ done
 exec /usr/bin/python3 -u -m gold_trader.scripts.run_auto_trader \
     --loop \
     --interval-seconds 60 \
+    --flat-risk \
+    --fixed-risk-usd 75.44 \
     --min-rr 1.25 \
     --risk-pct 8.0 \
     --timeframe 1h \
-    --mode COMPOUNDING_TOUCH \
+    --mode FLAT_RISK_TOUCH \
     --runner-trail-buffer 4.50 \
     --runner-target-2-multiplier 3.00 \
     --enable-ml-filter \
-    --ml-min-prob 0.52 \
+    --ml-min-prob 0.44 \
     --one-trade-per-bar \
     --loss-cooldown-minutes 60 \
     --max-daily-trades 6 \

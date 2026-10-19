@@ -102,6 +102,9 @@ class Settings:
         "BTCUSD": "BTC-USD",        # Bitcoin Spot USD
         "BTC": "BTC-USD",
         "BTC-USD": "BTC-USD",
+        "ETHUSD": "ETH-USD",        # Ethereum Spot USD
+        "ETH": "ETH-USD",
+        "ETH-USD": "ETH-USD",
     }
 
     def get_xm_credentials(self, account_type: Optional[str] = None) -> tuple[int, str, str]:

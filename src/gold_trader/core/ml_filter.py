@@ -42,6 +42,7 @@ logger = logging.getLogger("GoldMLFilter")
 
 DEFAULT_GOLD_MODEL_PATH = os.path.expanduser("~/.gold_trading_data/models/gold_ml_barrier.joblib")
 DEFAULT_BTC_MODEL_PATH = os.path.expanduser("~/.gold_trading_data/models/btc_ml_barrier.joblib")
+DEFAULT_ETH_MODEL_PATH = os.path.expanduser("~/.gold_trading_data/models/eth_ml_barrier.joblib")
 
 
 def extract_candle_features(
@@ -277,7 +278,12 @@ class GoldMLPredictor:
         if model_path:
             self.model_path = os.path.expanduser(model_path)
         else:
-            self.model_path = DEFAULT_BTC_MODEL_PATH if ("BTC" in self.symbol) else DEFAULT_GOLD_MODEL_PATH
+            if "BTC" in self.symbol:
+                self.model_path = DEFAULT_BTC_MODEL_PATH
+            elif "ETH" in self.symbol:
+                self.model_path = DEFAULT_ETH_MODEL_PATH
+            else:
+                self.model_path = DEFAULT_GOLD_MODEL_PATH
 
         self.model: Any = None
         self.feature_names: List[str] = []
@@ -312,8 +318,9 @@ class GoldMLPredictor:
         """
         sym = (symbol or self.symbol).upper()
         is_btc = "BTC" in sym
+        is_eth = "ETH" in sym
         if min_sl_pts is None:
-            min_sl_pts = 500.0 if is_btc else 8.00
+            min_sl_pts = 500.0 if is_btc else (20.0 if is_eth else 8.00)
 
         logger.info(f"Fetching {period} {interval} data for {sym} ML training...")
         candles = fetch_gold_candles(sym, period=period, interval=interval)
@@ -347,14 +354,16 @@ class GoldMLPredictor:
         rows_X = []
         rows_y = []
         n = len(candles)
-        for i in range(n - max_holding_bars):
-            if np.isnan(X_all[i]).any():
+        for i in range(1, n - max_holding_bars):
+            # Strictly use lagged features from bar i-1 (closed candle prior to entry)
+            # to guarantee zero intrabar lookahead leak
+            if np.isnan(X_all[i - 1]).any():
                 continue
             if not np.isnan(y_buy[i]):
-                rows_X.append(np.append(X_all[i], 1.0))
+                rows_X.append(np.append(X_all[i - 1], 1.0))
                 rows_y.append(y_buy[i])
             if not np.isnan(y_sell[i]):
-                rows_X.append(np.append(X_all[i], -1.0))
+                rows_X.append(np.append(X_all[i - 1], -1.0))
                 rows_y.append(y_sell[i])
 
         X_combined = np.array(rows_X, dtype=float)
@@ -455,9 +464,13 @@ class GoldMLPredictor:
         direction: Literal["BUY", "SELL"],
         macro_score: Optional[float] = None,
         min_probability_threshold: float = 0.52,
+        use_closed_bar: bool = True,
     ) -> Dict[str, Any]:
         """
         Evaluate real-time candle state and return the predicted win probability for the trade.
+        When use_closed_bar=True (default), evaluates the strictly completed prior closed candle
+        (candles[-2] if latest is in-progress, or candles[-1] if list only contains closed candles)
+        to eliminate all intrabar noise and lookahead bias.
         """
         if self.model is None:
             logger.info(f"ML model for {self.symbol} not found in cache. Training initial model...")
@@ -471,7 +484,8 @@ class GoldMLPredictor:
             macro_score = float(macro_data.get("macro_gold_score", 0.0))
 
         X_all, _ = extract_candle_features(candles, macro_score=macro_score)
-        latest_features = X_all[-1]
+        # Use strictly the last fully completed, closed bar (X_all[-2]) when evaluating live candle streams
+        latest_features = X_all[-2] if (use_closed_bar and len(X_all) >= 2) else X_all[-1]
 
         if np.isnan(latest_features).any():
             return {
@@ -492,12 +506,12 @@ class GoldMLPredictor:
         is_high_conviction = prob_win >= min_probability_threshold
 
         # Dynamic Lot Sizing Multiplier based on probability edge
-        if prob_win < 0.45:
+        if prob_win < min_probability_threshold:
             lot_mult = 0.0  # Pass entirely
             recommendation = "REJECT_NEGATIVE_EDGE"
-        elif prob_win < min_probability_threshold:
-            lot_mult = 0.50  # De-risk if forced
-            recommendation = "PASS_LOW_PROBABILITY"
+        elif prob_win < 0.50:
+            lot_mult = 0.75  # Soft approval
+            recommendation = "EXECUTE_APPROVED"
         elif prob_win < 0.60:
             lot_mult = 1.00  # Standard risk
             recommendation = "EXECUTE_APPROVED"

@@ -163,12 +163,14 @@ class CompoundingLadderManager:
             "DYNAMIC_EQUITY_PERCENT",
             "STREAK_ADAPTIVE",
             "HIGH_WATERMARK_RATCHET",
+            "FLAT_RISK",
         ] = "DISCRETE_30_LEVEL",
         starting_balance: float = 20.0,
         target_balance: float = 52384.0,
         base_risk_pct: float = 23.0,
         enable_circuit_breaker: bool = True,
         trailing_dd_floor_pct: Optional[float] = None,
+        fixed_risk_usd: float = 75.44,
     ):
         self.state_file = os.path.expanduser(
             state_file or "~/.gold_trading_data/compounding_ladder_state.json"
@@ -180,6 +182,7 @@ class CompoundingLadderManager:
         self.base_risk_pct = base_risk_pct
         self.enable_circuit_breaker = enable_circuit_breaker
         self.trailing_dd_floor_pct = trailing_dd_floor_pct
+        self.fixed_risk_usd = fixed_risk_usd
 
         self._ensure_dir()
         self.state = self._load_state()
@@ -199,13 +202,20 @@ class CompoundingLadderManager:
                     state.setdefault("base_risk_pct", self.base_risk_pct)
                     state.setdefault("enable_circuit_breaker", self.enable_circuit_breaker)
                     state.setdefault("trailing_dd_floor_pct", self.trailing_dd_floor_pct)
+                    state.setdefault("fixed_risk_usd", self.fixed_risk_usd)
                     state.setdefault("scratches", 0)
                     state.setdefault("reloads", 0)
                     state.setdefault("consecutive_losses", 0)
                     state.setdefault("ratchet_floor", 0.0)
                     state.setdefault("peak_balance", state.get("current_balance", self.starting_balance))
                     # Sync instance attributes with stored configuration if present
-                    self.ladder_mode = state.get("ladder_mode", self.ladder_mode)
+                    if self.ladder_mode == "FLAT_RISK":
+                        state["ladder_mode"] = "FLAT_RISK"
+                        state["fixed_risk_usd"] = self.fixed_risk_usd
+                        state["compounding_enabled"] = False
+                    else:
+                        self.ladder_mode = state.get("ladder_mode", self.ladder_mode)
+                    self.fixed_risk_usd = float(state.get("fixed_risk_usd", self.fixed_risk_usd))
                     self.loss_policy = state.get("loss_policy", self.loss_policy)
                     self.enable_circuit_breaker = state.get("enable_circuit_breaker", self.enable_circuit_breaker)
                     return state
@@ -291,7 +301,9 @@ class CompoundingLadderManager:
         """Calculates effective risk percentage for the upcoming trade."""
         bal = self.state["current_balance"]
 
-        if self.ladder_mode == "NOISE_ADAPTIVE_LADDER":
+        if self.ladder_mode == "FLAT_RISK":
+            pct = (self.fixed_risk_usd / self.state.get("starting_balance", 1000.0)) * 100.0
+        elif self.ladder_mode == "NOISE_ADAPTIVE_LADDER":
             lvl_info = get_noise_adaptive_level_info(self.state["current_level"])
             pct = lvl_info["risk_pct"]
         elif self.ladder_mode == "DISCRETE_30_LEVEL":
@@ -323,7 +335,20 @@ class CompoundingLadderManager:
     def get_status(self) -> Dict[str, Any]:
         """Returns the current state and parameters for the upcoming trade."""
         self.update_ratchet_floor()
-        if self.ladder_mode == "NOISE_ADAPTIVE_LADDER":
+        if self.ladder_mode == "FLAT_RISK":
+            next_specs = {
+                "level": self.state["current_level"],
+                "phase": "Flat Risk (Non-Compounding)",
+                "starting_balance": self.state.get("starting_balance", 1000.0),
+                "risk_pct": self.get_active_risk_pct(),
+                "expected_risk_usd": self.fixed_risk_usd,
+                "expected_gain_usd": round(self.fixed_risk_usd * 1.5, 2),
+                "min_sl_dollars": 8.0,
+                "reward_risk_ratio": 1.5,
+                "projected_balance_on_win": round(self.state["current_balance"] + (self.fixed_risk_usd * 1.5), 2),
+                "compounding_enabled": False,
+            }
+        elif self.ladder_mode == "NOISE_ADAPTIVE_LADDER":
             lvl_info = get_noise_adaptive_level_info(self.state["current_level"])
             next_specs = {
                 "level": lvl_info["level"],
@@ -407,7 +432,16 @@ class CompoundingLadderManager:
           - Lot size: dynamically scaled to planned dollar risk.
         """
         self.update_ratchet_floor()
-        if self.ladder_mode == "NOISE_ADAPTIVE_LADDER":
+        if self.ladder_mode == "FLAT_RISK":
+            lvl_info = {
+                "level": self.state["current_level"],
+                "risk_dollars": self.fixed_risk_usd,
+                "profit_dollars": round(self.fixed_risk_usd * 1.5, 2),
+                "min_sl_dollars": 8.0,
+                "rr_ratio": 1.5,
+                "lot_size": 0.05,
+            }
+        elif self.ladder_mode == "NOISE_ADAPTIVE_LADDER":
             lvl_info = get_noise_adaptive_level_info(self.state["current_level"])
         else:
             lvl_info = get_ladder_level_info(self.state["current_level"])
@@ -419,32 +453,42 @@ class CompoundingLadderManager:
         active_pct = self.get_active_risk_pct() / 100.0
 
         is_btc = "BTC" in symbol.upper()
-        contract_size = 1.0 if is_btc else CONTRACT_SIZE
-        default_min_sl = 500.0 if is_btc else 8.0
+        is_eth = "ETH" in symbol.upper()
+        contract_size = 1.0 if (is_btc or is_eth) else CONTRACT_SIZE
+        default_min_sl = 500.0 if is_btc else (20.0 if is_eth else 8.0)
+        min_lot_size = 0.02 if is_eth else MIN_LOT
 
         if use_atr_stops and (atr is not None or min_sl_pts > 0):
-            current_atr = atr if (atr and atr > 0) else (450.0 if is_btc else 15.0)
-            min_pts = lvl_info.get("min_sl_dollars", default_min_sl) if self.ladder_mode == "NOISE_ADAPTIVE_LADDER" else default_min_sl
+            current_atr = atr if (atr and atr > 0) else (450.0 if is_btc else (20.0 if is_eth else 15.0))
+            min_pts = lvl_info.get("min_sl_dollars", default_min_sl) if self.ladder_mode in ("NOISE_ADAPTIVE_LADDER", "FLAT_RISK") else default_min_sl
             if is_btc:
                 min_pts = max(min_pts, 500.0)
+            elif is_eth:
+                min_pts = max(min_pts, 20.0)
             sl_pts = round(max(1.5 * current_atr, min_pts), 2)
             eff_rr = rr_ratio if rr_ratio is not None else lvl_info.get("rr_ratio", 1.25)
             tp_pts = round(sl_pts * eff_rr, 2)
             be_pts = round(sl_pts * 1.0, 2)
 
-            if self.ladder_mode == "DISCRETE_30_LEVEL" and use_ladder_lots:
+            if self.ladder_mode == "FLAT_RISK":
+                planned_risk_usd = self.fixed_risk_usd
+                if self.is_circuit_breaker_active():
+                    planned_risk_usd *= 0.50
+                calculated_lots = math.floor((planned_risk_usd / (sl_pts * contract_size)) * 100.0 + 0.0001) / 100.0
+                lots = max(min_lot_size, min(MAX_LOT, calculated_lots))
+            elif self.ladder_mode == "DISCRETE_30_LEVEL" and use_ladder_lots:
                 lots = lvl_info["lot_size"]
             elif self.ladder_mode == "NOISE_ADAPTIVE_LADDER":
                 planned_risk_usd = lvl_info["risk_dollars"]
                 if self.is_circuit_breaker_active():
                     planned_risk_usd *= 0.50
                 calculated_lots = math.floor((planned_risk_usd / (sl_pts * contract_size)) * 100.0 + 0.0001) / 100.0
-                lots = max(MIN_LOT, min(MAX_LOT, calculated_lots))
+                lots = max(min_lot_size, min(MAX_LOT, calculated_lots))
             else:
                 # Dynamic lot sizing based on active archetype & risk capital
                 planned_risk_usd = risk_capital * active_pct
                 calculated_lots = math.floor((planned_risk_usd / (sl_pts * contract_size)) * 100.0 + 0.0001) / 100.0
-                lots = max(MIN_LOT, min(MAX_LOT, calculated_lots))
+                lots = max(min_lot_size, min(MAX_LOT, calculated_lots))
         else:
             lots = lvl_info.get("lot_size", 0.01)
             tp_pts = round(lvl_info.get("tp_pips", 20.0) * 0.10, 2)  # Typically $2.00
@@ -511,8 +555,26 @@ class CompoundingLadderManager:
         prev_level = self.state["current_level"]
         self.state["total_trades"] += 1
 
+        if self.ladder_mode == "FLAT_RISK":
+            if is_breakeven or (abs(realized_pnl) < 0.25 and not win):
+                outcome = "BREAKEVEN"
+                self.state["scratches"] = self.state.get("scratches", 0) + 1
+            elif win:
+                outcome = "WIN"
+                self.state["wins"] += 1
+                self.state["consecutive_wins"] += 1
+                self.state["consecutive_losses"] = 0
+            else:
+                outcome = "LOSS"
+                self.state["losses"] += 1
+                self.state["consecutive_wins"] = 0
+                self.state["consecutive_losses"] = self.state.get("consecutive_losses", 0) + 1
+
+            self.state["current_balance"] = max(0.0, round(self.state["current_balance"] + realized_pnl, 2))
+            self.state["peak_balance"] = max(self.state.get("peak_balance", 0.0), self.state["current_balance"])
+            self.state["current_level"] = prev_level
         # Check if scratch / breakeven exit
-        if is_breakeven or (abs(realized_pnl) < 0.25 and not win):
+        elif is_breakeven or (abs(realized_pnl) < 0.25 and not win):
             outcome = "BREAKEVEN"
             self.state["scratches"] = self.state.get("scratches", 0) + 1
             new_level = prev_level
@@ -614,6 +676,25 @@ class CompoundingLadderManager:
 
     def reset_ladder(self, starting_balance: float = 1000.0, reset_stats: bool = False) -> Dict[str, Any]:
         """Manually reset the ladder with specified capital, automatically calibrating initial level."""
+        if self.ladder_mode == "FLAT_RISK":
+            self.state["current_level"] = 18
+            self.state["current_balance"] = starting_balance
+            self.state["starting_balance"] = starting_balance
+            self.state["peak_balance"] = starting_balance
+            self.state["ratchet_floor"] = 0.0
+            self.state["consecutive_wins"] = 0
+            self.state["consecutive_losses"] = 0
+            if reset_stats:
+                self.state["total_trades"] = 0
+                self.state["wins"] = 0
+                self.state["losses"] = 0
+                self.state["scratches"] = 0
+                self.state["reloads"] = 0
+                self.state["history"] = []
+            self.state["status"] = "ACTIVE"
+            self._save_state()
+            return self.get_status()
+
         mat = NOISE_ADAPTIVE_MATRIX if self.ladder_mode == "NOISE_ADAPTIVE_LADDER" else LADDER_MATRIX
         start_lvl = find_closest_level_for_balance(starting_balance, matrix=mat)
         self.state["current_level"] = start_lvl

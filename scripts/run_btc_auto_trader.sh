@@ -16,7 +16,9 @@ done
 
 exec /usr/bin/python3 -u -m gold_trader.scripts.run_auto_trader \
     --symbol BTCUSD \
-    --mode COMPOUNDING_TOUCH \
+    --mode FLAT_RISK_TOUCH \
+    --flat-risk \
+    --fixed-risk-usd 75.44 \
     --timeframe 1h \
     --min-rr 1.25 \
     --risk-pct 8.0 \
@@ -28,7 +30,7 @@ exec /usr/bin/python3 -u -m gold_trader.scripts.run_auto_trader \
     --runner-trail-buffer 350.00 \
     --runner-target-2-multiplier 3.00 \
     --enable-ml-filter \
-    --ml-min-prob 0.52 \
+    --ml-min-prob 0.44 \
     --ladder-state-file /home/mcpuser/.gold_trading_data/btc_compounding_ladder_state.json \
     --db-path /home/mcpuser/.gold_trading_data/btc_auto_trader.db \
     --loop 2>&1 | tee -a /home/mcpuser/MCP/gold-trading-system/btc_auto_trader.log

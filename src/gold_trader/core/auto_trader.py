@@ -37,13 +37,16 @@ class AutoTraderConfig:
     symbol: str = "XAUUSD"
     timeframe: str = "1h"
     mode: Literal[
+        "FLAT_RISK_TOUCH",
+        "COMPOUNDING_TOUCH",
         "COMPOUNDING_LADDER",
         "COMPOUNDING_HYBRID",
-        "COMPOUNDING_TOUCH",
         "STANDARD_SWING",
         "DONCHIAN_BREAKOUT",
         "DONCHIAN_MOMENTUM_HYBRID",
-    ] = "COMPOUNDING_TOUCH"
+    ] = "FLAT_RISK_TOUCH"
+    flat_risk: bool = True
+    fixed_risk_usd: float = 75.44
     risk_pct_per_trade: float = 1.0
     min_risk_reward: float = 1.25
     min_quality_score: int = 80
@@ -96,15 +99,26 @@ class GoldAutoTrader:
         self.config = config_override or AutoTraderConfig()
         self.broker = broker or SocketBroker()
         self.notifier = notifier or TelegramNotifier()
-        default_db = "~/.gold_trading_data/btc_auto_trader.db" if "BTC" in self.config.symbol.upper() else "~/.gold_trading_data/auto_trader.db"
+        if "BTC" in self.config.symbol.upper():
+            default_db = "~/.gold_trading_data/btc_auto_trader.db"
+            default_ladder = "~/.gold_trading_data/btc_compounding_ladder_state.json"
+        elif "ETH" in self.config.symbol.upper():
+            default_db = "~/.gold_trading_data/eth_auto_trader.db"
+            default_ladder = "~/.gold_trading_data/eth_compounding_ladder_state.json"
+        else:
+            default_db = "~/.gold_trading_data/auto_trader.db"
+            default_ladder = "~/.gold_trading_data/compounding_ladder_state.json"
         self.db_path = os.path.expanduser(db_path or self.config.db_path or default_db)
-        
-        default_ladder = "~/.gold_trading_data/btc_compounding_ladder_state.json" if "BTC" in self.config.symbol.upper() else "~/.gold_trading_data/compounding_ladder_state.json"
         ladder_file = self.config.ladder_state_file or default_ladder
+        is_flat_risk = self.config.flat_risk or (self.config.mode == "FLAT_RISK_TOUCH")
+        active_ladder_mode = "FLAT_RISK" if is_flat_risk else "NOISE_ADAPTIVE_LADDER"
+        active_loss_policy = "ONE_STEP_LADDER" if is_flat_risk else "PROGRESSIVE_RATCHET"
         self.ladder_manager = CompoundingLadderManager(
             state_file=ladder_file,
-            ladder_mode="NOISE_ADAPTIVE_LADDER",
-            loss_policy="PROGRESSIVE_RATCHET",
+            ladder_mode=active_ladder_mode,
+            loss_policy=active_loss_policy,
+            starting_balance=1000.0,
+            fixed_risk_usd=self.config.fixed_risk_usd,
         )
 
         self._ensure_db()
@@ -121,6 +135,8 @@ class GoldAutoTrader:
         t_u = target_symbol.upper()
         if "BTC" in t_u:
             return "BTC" in p_u
+        if "ETH" in t_u:
+            return "ETH" in p_u
         if "GOLD" in t_u or "XAU" in t_u:
             return ("GOLD" in p_u or "XAU" in p_u)
         return p_u.startswith(t_u) or t_u.startswith(p_u)
@@ -287,9 +303,9 @@ class GoldAutoTrader:
         managed_actions = self._manage_open_positions(open_positions)
 
         # 4. Generate Trade Setup based on mode
-        if self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH"):
-            is_touch = (self.config.mode == "COMPOUNDING_TOUCH")
-            is_hybrid = (self.config.mode in ("COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH") or self.config.timeframe == "1h")
+        is_touch = (self.config.mode in ("COMPOUNDING_TOUCH", "FLAT_RISK_TOUCH"))
+        is_hybrid = (self.config.mode in ("COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH", "FLAT_RISK_TOUCH") or self.config.timeframe == "1h")
+        if self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH", "FLAT_RISK_TOUCH"):
             tf = "1h" if is_hybrid else self.config.timeframe
             strat_mode = "HIGH_VELOCITY_TOUCH_1H" if (is_touch or is_hybrid) else "VALUE_ZONE_15M"
             setup = generate_compounding_ladder_setup(
@@ -312,7 +328,16 @@ class GoldAutoTrader:
             order_type = str(setup.get("order_type", "MARKET" if is_hybrid else ("LIMIT" if self.config.use_pullback_limit else "MARKET")))
             price = float(setup.get("entry_price", setup.get("market_price", 0.0)))
             bias = str(setup.get("bias", "NEUTRAL"))
-            default_name = "1H Donchian 10 Touch High-Velocity Compounding" if is_touch else ("1H Donchian + Momentum Hybrid Compounding" if is_hybrid else "Compounding Ladder Setup")
+            is_flat = (self.ladder_manager.ladder_mode == "FLAT_RISK")
+            default_name = (
+                f"1H Donchian 10 Touch (Flat Risk ${self.config.fixed_risk_usd:.2f})"
+                if (is_touch and is_flat)
+                else (
+                    "1H Donchian 10 Touch High-Velocity Compounding"
+                    if is_touch
+                    else ("1H Donchian + Momentum Hybrid Compounding" if is_hybrid else "Compounding Ladder Setup")
+                )
+            )
             setup_name = str(setup.get("setup_name", default_name))
             action = str(setup.get("action", "HOLD"))
             quality_score = 95 if action in ("BUY", "SELL") else 50
@@ -444,7 +469,7 @@ class GoldAutoTrader:
             is_weekend = now_dt.weekday() == 5 or (now_dt.weekday() == 6 and now_dt.hour < 22)
             if is_weekend and not is_crypto:
                 rejection_reasons.append("Market Closed: Weekend hours (Gold market reopens Sunday 22:05 UTC).")
-            elif not is_crypto and not (self.config.session_start_hour_utc <= now_dt.hour < self.config.session_end_hour_utc):
+            elif not (self.config.session_start_hour_utc <= now_dt.hour < self.config.session_end_hour_utc):
                 rejection_reasons.append(
                     f"Session Filter: Current time {now_dt.strftime('%H:%M UTC')} is outside liquid London/NY hours "
                     f"({self.config.session_start_hour_utc:02d}:00 - {self.config.session_end_hour_utc:02d}:00 UTC). Avoiding Asian chop."
@@ -497,6 +522,7 @@ class GoldAutoTrader:
                         candles_eval,
                         direction=action,
                         min_probability_threshold=self.config.ml_min_probability,
+                        use_closed_bar=True,
                     )
                     setup["ml_filter"] = ml_eval
                     prob_win = float(ml_eval.get("probability_win", 0.50))
@@ -538,8 +564,9 @@ class GoldAutoTrader:
                                 broker_entry = b_ask if action == "BUY" else b_bid
                                 if broker_entry > 0:
                                     is_btc = "BTC" in symbol.upper()
-                                    default_sl_d = 500.0 if is_btc else 1.50
-                                    default_tp_d = 625.0 if is_btc else 2.00
+                                    is_eth = "ETH" in symbol.upper()
+                                    default_sl_d = 500.0 if is_btc else (20.0 if is_eth else 1.50)
+                                    default_tp_d = 625.0 if is_btc else (25.0 if is_eth else 2.00)
                                     sl_dist = abs(price - sl) if sl else default_sl_d
                                     tp_dist = abs(tp1 - price) if tp1 else default_tp_d
                                     price = broker_entry
@@ -561,11 +588,7 @@ class GoldAutoTrader:
                             tp1 = round(float(tp1), 2)
                             tp2 = tp1
 
-                    order_comment = (
-                        f"AI-Compounding-L{level}"
-                        if self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH")
-                        else f"AI-Auto-{setup_name[:12]}"
-                    )
+                    order_comment = f"AI-FlatRisk-{symbol}"
                     actual_tp = tp2 if (self.config.enable_partial_scale_out or self.config.enable_runner_trailing or self.config.mode in ("DONCHIAN_BREAKOUT", "DONCHIAN_MOMENTUM_HYBRID", "HYBRID")) and tp2 else tp1
                     order_result = self.broker.place_order(
                         symbol="GOLD" if "GOLD" in symbol else symbol,
@@ -700,10 +723,16 @@ class GoldAutoTrader:
                 symbol = str(p.get("symbol", self.config.symbol))
 
                 is_btc = "BTC" in symbol.upper()
-                contract_size = 1.0 if is_btc else 100.0
-                default_sl_dist = 500.00 if is_btc else 8.00
-                be_offset = 30.00 if is_btc else 0.50
-                trail_buffer = self.config.runner_trail_buffer_usd if (not is_btc or self.config.runner_trail_buffer_usd > 50.0) else 350.00
+                is_eth = "ETH" in symbol.upper()
+                contract_size = 1.0 if (is_btc or is_eth) else 100.0
+                default_sl_dist = 500.00 if is_btc else (20.00 if is_eth else 8.00)
+                be_offset = 30.00 if is_btc else (2.00 if is_eth else 0.50)
+                if is_btc:
+                    trail_buffer = self.config.runner_trail_buffer_usd if self.config.runner_trail_buffer_usd > 50.0 else 350.00
+                elif is_eth:
+                    trail_buffer = self.config.runner_trail_buffer_usd if self.config.runner_trail_buffer_usd != 4.50 else 10.00
+                else:
+                    trail_buffer = self.config.runner_trail_buffer_usd
 
                 tracked = self.tracked_positions.get(ticket)
                 if not tracked:
@@ -853,7 +882,8 @@ class GoldAutoTrader:
 
             symbol = trade.get("symbol", self.config.symbol)
             is_btc = "BTC" in symbol.upper()
-            contract_size = 1.0 if is_btc else 100.0
+            is_eth = "ETH" in symbol.upper()
+            contract_size = 1.0 if (is_btc or is_eth) else 100.0
             side = trade.get("action", "BUY")
             entry_price = float(trade.get("entry_price", 0.0))
             lots = float(trade.get("lots", 0.01))
@@ -919,16 +949,18 @@ class GoldAutoTrader:
                     ticket, pnl, self.config.loss_cooldown_minutes
                 )
 
-            # If trade was part of the Compounding Ladder, advance or step down ladder state
-            is_compounding_trade = (
+            # If trade was part of the Compounding Ladder or Flat Risk, record trade result
+            is_managed_strategy_trade = (
                 "compounding" in comment.lower()
                 or "ladder" in comment.lower()
-                or self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH")
+                or "flat" in comment.lower()
+                or self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH", "FLAT_RISK_TOUCH")
+                or self.config.flat_risk
             )
-            if is_compounding_trade:
+            if is_managed_strategy_trade:
                 try:
                     ladder = self.ladder_manager
-                    be_cutoff = 1.00 if is_btc else 0.35
+                    be_cutoff = 1.00 if is_btc else (0.50 if is_eth else 0.35)
                     is_be = abs(pnl) <= be_cutoff
                     is_win = pnl > be_cutoff
                     ladder_update = ladder.record_trade_result(
@@ -938,9 +970,10 @@ class GoldAutoTrader:
                         is_breakeven=is_be,
                         notes=f"AutoTrader Ticket #{ticket} closed at {close_price}",
                     )
-                    logger.info(f"Compounding Ladder updated after Ticket #{ticket}: {ladder_update}")
+                    mode_lbl = "Flat Risk ($75.44 Risk)" if ladder.ladder_mode == "FLAT_RISK" else f"Compounding Level {ladder_update.get('new_level')}"
+                    logger.info(f"Execution logged after Ticket #{ticket} ({mode_lbl}): {ladder_update}")
                 except Exception as e:
-                    logger.error(f"Failed to update compounding ladder on trade exit: {e}")
+                    logger.error(f"Failed to update trading execution state on trade exit: {e}")
 
             if self.config.send_telegram_alerts:
                 self.notifier.send_trade_exit(

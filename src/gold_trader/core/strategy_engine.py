@@ -780,7 +780,8 @@ def generate_donchian_momentum_hybrid_setup(
 
     # Stop Loss & Take Profit Brackets
     is_btc = "BTC" in symbol.upper()
-    min_stop = 500.0 if is_btc else 8.00
+    is_eth = "ETH" in symbol.upper()
+    min_stop = 500.0 if is_btc else (20.0 if is_eth else 8.00)
     stop_distance = max(round(1.5 * atr_val, 2), min_stop)
     stop_distance_pips = round(stop_distance * 10, 1)
 
@@ -799,8 +800,10 @@ def generate_donchian_momentum_hybrid_setup(
 
     rr_t1 = round(abs(target_1 - eff_entry) / stop_distance, 2) if stop_distance > 0 else rr_multiplier
     rr_t2 = round(abs(target_2 - eff_entry) / stop_distance, 2) if stop_distance > 0 else runner_t2_multiplier
-    c_size = 1.0 if is_btc else 100.0
+    c_size = 1.0 if (is_btc or is_eth) else 100.0
     suggested_lots = calculate_lot_size(account_balance, risk_pct, eff_entry, stop_loss, contract_size=c_size)
+    if is_eth:
+        suggested_lots = max(0.02, suggested_lots)
 
     bias = "BULLISH" if (macro_bullish and st_dir == 1) else ("BEARISH" if (macro_bearish and st_dir == -1) else "NEUTRAL")
 
@@ -905,7 +908,7 @@ def generate_compounding_ladder_setup(
 
     # Calculate bracket order specs with dynamic ATR stop loss and compounding matrix lots.
     use_ladder_lots = False if is_hybrid_1h else True
-    min_sl = 500.0 if "BTC" in symbol.upper() else 8.0
+    min_sl = 500.0 if "BTC" in symbol.upper() else (20.0 if "ETH" in symbol.upper() else 8.0)
     bracket_order = ladder.calculate_bracket_order(
         current_price=market_price,
         direction=action if action in ("BUY", "SELL") else "BUY",
