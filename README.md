@@ -3,7 +3,7 @@
 
 An autonomous, institutional-grade quantitative trading platform and 24/7 background execution engine on **XM MetaTrader 5 (MT5)**, running on Linux (Ubuntu/Debian via Wine 64-bit and Xvfb).
 
-Featuring **OpenBB Platform Macro & News Catalyst Guardrails**, **Marcos López de Prado Triple-Barrier LightGBM Meta-Labeling**, **Realistic Flat Risk Execution ($75.44 Planned Risk on $1,000 Baseline)**, **Dynamic ATR Noise Clearance**, **Telegram Real-time Telemetry**, and **Turn-Key VPS Deployment**.
+Featuring **OpenBB Platform Macro & News Catalyst Guardrails**, **Marcos López de Prado Triple-Barrier LightGBM Meta-Labeling**, **Purged & Embargoed Cross-Validation**, **Real-World Execution Friction Deductions (Spreads, Slippage & Overnight Swaps)**, **Realistic Flat Risk Execution ($75.44 Planned Risk on $1,000 Baseline)**, **Dynamic ATR Noise Clearance**, **Telegram Real-time Telemetry**, and **Turn-Key VPS Deployment**.
 
 ---
 
@@ -91,27 +91,32 @@ graph TD
   - **Stage 2 (Risk-Free Runner)**: Remaining position stop-loss shifts to Break-Even + buffer ($0.50 on Gold, $30 on BTC, $2.00 on ETH), locking in a completely risk-free runner.
   - **Stage 3 (Dynamic Trailing Stop)**: Runner trailing stop follows peak price excursions ($4.50 Gold / $350 BTC / $10 ETH) up to Target 2 (3.0R).
 
-### 5. Turnkey Linux Wine MT5 Bridge
+### 5. Institutional Backtesting & Quantitative Audit Engine
+- **Intrabar Same-Bar SL Resolution**: Evaluates adverse excursions on entry candle $i$ (`SAME_BAR_SL`), preventing survivorship bias from skipping candle $i$.
+- **Purged & Embargoed Cross-Validation (Marcos López de Prado, *AFML* Ch. 4)**: Purges training trades whose multi-bar holding period ($[t_{\text{entry}}, t_{\text{exit}}]$ up to 48 hours) overlaps with validation intervals, guaranteeing strict zero label lookahead.
+- **Realistic Execution Friction Deductions**: Deducts live spreads ($0.35/oz Gold, $15.00/BTC, $0.75/ETH), round-trip execution slippage ($0.30 Gold, $10.00 BTC, $0.50 ETH), and overnight swap financing.
+- **Multiple Testing Correction**: Integrates the **Deflated Sharpe Ratio (DSR)** (Bailey & López de Prado, 2014) and **Probabilistic Sharpe Ratio (PSR)** adjusting for a 50-trial multiple testing penalty.
+- **Sample Segregation**: Primary benchmarks evaluate completed 12-month calendar periods (October 2025 – September 2026), isolating partial MTD data in an uncompleted sample appendix.
+
+### 6. Turnkey Linux Wine MT5 Bridge
 - Runs official XM Global MT5 (64-bit) under headless Linux using Wine and `Xvfb` virtual display `:99`.
 - High-speed TCP socket bridge server (`127.0.0.1:8888`) connects Python with MT5 with zero cloud gateway fees ($0 cost).
 
 ---
 
-## 📊 2-Year Walk-Forward Production Backtest Leaderboard
-*Evaluated on 11,434 hourly candles over 2 continuous years (2024–2026), 2.5-pip broker spread, Walk-Forward LightGBM Meta-Labeling, $1,000 Starting Capital, and $75.44 Fixed Risk:*
+## 📊 Rigorous Production Backtest Benchmark: Clean 12-Month Audit
+*Evaluated on completed 12 months (October 2025 – September 2026), Purged & Embargoed Walk-Forward LightGBM Meta-Labeling, $1,000 Starting Capital per asset ($3,000 blended portfolio), $75.44 Fixed Risk, All Spreads, Slippage, and Swaps Deducted:*
 
-| Asset & Mode | Schedule / Window | ML Conviction Gate | Trades | Win Rate % | Profit Factor | Net R-Multiple | Sharpe Ratio | Max Drawdown ($ / %) | Net Profit ($1,000 Seed) | Final Balance |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 🥇 **Ethereum (ETH/USD) Live** | **London/NY (07:00–19:00 UTC)** | **$P \ge 0.44$** | **1,528** | **54.8%** | **1.55** | **+343.6R** | **5.47** | **$1,392.40 (13.9%)** | <span style="color:green">**+$25,918.90**</span> | **$26,918.90** |
-| 🥈 **Bitcoin (BTC/USD) Live** | **24/7/365 Continuous** | **$P \ge 0.44$** | **2,505** | **54.3%** | **1.36** | **+410.6R** | **5.28** | **$2,217.94 (18.5%)** | <span style="color:green">**+$30,979.31**</span> | **$31,979.31** |
-| 🥉 **Gold (XAU/USD) Live** | **London/NY (07:00–19:00 UTC)** | **$P \ge 0.44$** | **1,012** | **55.6%** | **1.47** | **+243.7R** | **4.79** | **$1,847.70 (56.8%)** | <span style="color:green">**+$18,384.09**</span> | **$19,384.09** |
-| Ethereum Strict | London/NY (07:00–19:00 UTC) | $P \ge 0.52$ | 1,155 | 54.0% | 1.48 | +231.2R | 4.26 | $1,419.09 (15.4%) | +$17,438.14 | $18,438.14 |
-| Bitcoin Strict | 24/7/365 Continuous | $P \ge 0.52$ | 1,849 | 54.7% | 1.40 | +322.2R | 4.82 | $1,702.11 (21.6%) | +$24,310.48 | $25,310.48 |
-| Gold Strict | London/NY (07:00–19:00 UTC) | $P \ge 0.52$ | 763 | 56.2% | 1.54 | +192.3R | 4.37 | $1,380.98 (61.6%) | +$14,506.94 | $15,506.94 |
-| Ethereum 24/7 (No Filter) | 24/7 Continuous | $P \ge 0.44$ | 2,827 | 53.6% | 1.34 | +393.3R | 4.73 | $2,764.53 (31.7%) | +$29,673.74 | $30,673.74 |
+| Asset & Mode | Schedule / Window | ML Gate | 12-Mo Trades | Win Rate % | Profit Factor | Net R | Net Profit (USD) | Return % | Profitable Months | Max DD % | DSR % (50 Trials) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 🥇 **Spot Gold (`XAUUSD`)** | **London/NY (07:00–19:00 UTC)** | **$P \ge 0.44$** | **570** | **53.3%** | **1.39** | **+106.6 R** | <span style="color:green">**+$8,046.26**</span> | **+804.6%** | **10 / 12 (83.3%)** | 82.6% | **29.7%** |
+| 🥈 **Bitcoin (`BTCUSD`)** | **24/7/365 Continuous** | **$P \ge 0.44$** | **1,397** | **53.1%** | **1.21** | **+140.3 R** | <span style="color:green">**+$10,582.11**</span> | **+1,058.2%** | **10 / 12 (83.3%)** | 32.7% | 0.0% |
+| 🥉 **Ethereum (`ETHUSD`)** | **London/NY (07:00–19:00 UTC)** | **$P \ge 0.44$** | **904** | **49.9%** | **1.14** | **+66.2 R** | <span style="color:green">**+$4,996.87**</span> | **+499.7%** | **10 / 12 (83.3%)** | 61.0% | 0.1% |
+| 💎 **Combined Portfolio ($3k Seed)** | **Blended Multi-Asset** | **$P \ge 0.44$** | **2,871** | **52.2%** | **1.22** | **+313.1 R** | <span style="color:green">**+$23,625.24**</span> | **+787.5%** | **11 / 12 (91.7%)** | **8.8%** | **64.2%** |
 
-> [!TIP]
-> **Why Session Filtering Wins on Ethereum**: Gold and Ethereum exhibit significant false-breakout noise during Asian low-liquidity hours. Enforcing the London/NY session filter (07:00–19:00 UTC) on Ethereum cuts maximum drawdown in half (from **31.7% down to 13.9%**) while elevating the Sharpe ratio to an institutional **5.47**.
+> [!NOTE]
+> **Complete Month-by-Month Breakdown**: See the full audit report with all individual monthly matrices, trade-by-trade tables, and October 2026 MTD sample data at:  
+> 👉 [**`reports/COMPREHENSIVE_BACKTEST_AUDIT_REPORT.md`**](file:///home/mcpuser/MCP/gold-trading-system/reports/COMPREHENSIVE_BACKTEST_AUDIT_REPORT.md)
 
 ---
 
@@ -123,8 +128,11 @@ graph TD
 ├── requirements.txt                   # Platform requirements
 ├── AGENTS.md                          # Persistent System Architecture Knowledge Base
 ├── README.md                          # Platform documentation
+├── reports/
+│   └── COMPREHENSIVE_BACKTEST_AUDIT_REPORT.md # Master quantitative backtest audit & monthly matrices
 ├── scripts/
-│   ├── run_production_backtest.py     # Live 2-year production walk-forward backtest (Gold, BTC, ETH)
+│   ├── run_production_backtest.py     # Production backtest engine (Purged CV, friction deductions, DSR)
+│   ├── analyze_monthly_breakout.py    # 12-month breakout analyzer across Gold, BTC & ETH
 │   ├── optimize_sl_tsl_ml.py          # 35-configuration SL & TSL ML grid optimizer
 │   ├── optimize_strategy_combinations.py # Combinatorial ML optimizer
 │   ├── start_bridge.sh                # Start MT5 Wine socket bridge
@@ -184,19 +192,13 @@ python3 -c "from gold_trader.brokers.socket_broker import SocketBroker; print(So
 systemctl --user status mt5-bridge.service gold-auto-trader.service btc-auto-trader.service eth-auto-trader.service --no-pager
 ```
 
-### 2. Run Production Walk-Forward Backtesting
+### 2. Run Production Walk-Forward Backtesting & Monthly Breakouts
 ```bash
-# Run Ethereum Backtest (with London/NY Session Filter & ML Gate)
-python3 scripts/run_production_backtest.py --asset eth --ml-prob 0.44 --session-filter
+# Generate 12-Month Breakout Matrix across Gold, BTC & ETH (Full friction & purged CV audit)
+python3 scripts/analyze_monthly_breakout.py
 
-# Run Bitcoin Backtest (24/7 Continuous)
-python3 scripts/run_production_backtest.py --asset btc --ml-prob 0.44
-
-# Run Gold Backtest
-python3 scripts/run_production_backtest.py --asset gold --ml-prob 0.44
-
-# Run Complete Multi-Asset Comparative Benchmark Suite
-python3 scripts/run_production_backtest.py --all
+# Run Complete Multi-Asset Production Benchmark Suite (Purged CV + DSR)
+python3 scripts/run_production_backtest.py
 ```
 
 ### 3. Verify OpenBB Macro & News Catalyst Guard

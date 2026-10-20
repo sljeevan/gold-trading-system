@@ -3,6 +3,7 @@ SQLite-backed Paper Trading Broker for testing Gold strategies with realistic ex
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import os
 import sqlite3
 import uuid
@@ -20,9 +21,18 @@ class PaperBroker(BaseBroker):
         self.db_path = db_path or config.PAPER_DB_PATH
         self._init_db()
 
+    @contextmanager
+    def _db_connection(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def _init_db(self) -> None:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS account (
@@ -80,7 +90,7 @@ class PaperBroker(BaseBroker):
         return 2650.0  # Realistic default Gold spot price if offline
 
     def get_account_info(self) -> AccountInfo:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT balance, currency, leverage FROM account WHERE id = 'PAPER_MAIN'")
             row = cursor.fetchone()
@@ -108,7 +118,7 @@ class PaperBroker(BaseBroker):
         }
 
     def get_open_positions(self, symbol: Optional[str] = None) -> List[Position]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db_connection() as conn:
             cursor = conn.cursor()
             query = "SELECT ticket, symbol, side, lots, open_price, sl, tp, open_time, comment FROM positions"
             params: list = []
@@ -159,7 +169,7 @@ class PaperBroker(BaseBroker):
 
         ticket = f"P-{uuid.uuid4().hex[:8].upper()}"
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -189,7 +199,7 @@ class PaperBroker(BaseBroker):
         sl: Optional[float] = None,
         tp: Optional[float] = None,
     ) -> OrderResult:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE positions SET sl = ?, tp = ? WHERE ticket = ?", (sl, tp, ticket))
             if cursor.rowcount == 0:
@@ -222,7 +232,7 @@ class PaperBroker(BaseBroker):
 
     def close_position(self, ticket: str) -> OrderResult:
         now_str = datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT symbol, side, lots, open_price, open_time, comment FROM positions WHERE ticket = ?", (ticket,))
             row = cursor.fetchone()

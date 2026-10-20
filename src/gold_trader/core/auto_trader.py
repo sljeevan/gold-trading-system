@@ -6,6 +6,7 @@ and real-time Telegram notifications.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -141,11 +142,21 @@ class GoldAutoTrader:
             return ("GOLD" in p_u or "XAU" in p_u)
         return p_u.startswith(t_u) or t_u.startswith(p_u)
 
+    @contextmanager
+    def _db_connection(self):
+        """Context manager that yields an active SQLite connection and guarantees it is closed."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def _ensure_db(self):
         dname = os.path.dirname(self.db_path)
         if dname:
             os.makedirs(dname, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._db_connection() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS scan_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -210,7 +221,7 @@ class GoldAutoTrader:
     def _save_state(self, key: str, value: str):
         """Persist engine control state to database."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connection() as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO engine_state (key, value) VALUES (?, ?)",
                     (key, value)
@@ -222,7 +233,7 @@ class GoldAutoTrader:
     def _get_state(self, key: str) -> Optional[str]:
         """Retrieve engine control state from database."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connection() as conn:
                 cur = conn.cursor()
                 row = cur.execute("SELECT value FROM engine_state WHERE key = ?", (key,)).fetchone()
                 return str(row[0]) if row else None
@@ -233,7 +244,7 @@ class GoldAutoTrader:
         """Load currently open tracked trades into memory."""
         self.tracked_positions: Dict[str, Dict[str, Any]] = {}
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connection() as conn:
                 conn.row_factory = sqlite3.Row
                 cur = conn.cursor()
                 cur.execute("SELECT * FROM trade_executions WHERE status = 'OPEN'")
@@ -257,7 +268,7 @@ class GoldAutoTrader:
     ):
         now_str = datetime.now(timezone.utc).isoformat()
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connection() as conn:
                 conn.execute(
                     """
                     INSERT INTO scan_logs 
@@ -481,7 +492,7 @@ class GoldAutoTrader:
         today_date_str = now_dt.strftime("%Y-%m-%d")
         daily_trades_count = 0
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connection() as conn:
                 cur = conn.cursor()
                 row = cur.execute(
                     "SELECT COUNT(*) FROM trade_executions WHERE (timestamp LIKE ? OR close_time LIKE ?)",
@@ -637,7 +648,7 @@ class GoldAutoTrader:
                             "partial_realized_usd": 0.0,
                         }
                         
-                        with sqlite3.connect(self.db_path) as conn:
+                        with self._db_connection() as conn:
                             conn.execute(
                                 """
                                 INSERT OR REPLACE INTO trade_executions
@@ -858,7 +869,7 @@ class GoldAutoTrader:
                                     )
 
                 # Persist updated tracking state to database
-                with sqlite3.connect(self.db_path) as conn:
+                with self._db_connection() as conn:
                     conn.execute(
                         """
                         UPDATE trade_executions 
@@ -935,7 +946,7 @@ class GoldAutoTrader:
                 rem_pnl = round(price_diff * rem_lots * contract_size, 2)
                 pnl = round(partial_pnl + rem_pnl, 2)
 
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connection() as conn:
                 conn.execute(
                     """
                     UPDATE trade_executions 
@@ -1001,7 +1012,7 @@ class GoldAutoTrader:
         scans = []
         trades = []
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._db_connection() as conn:
                 conn.row_factory = sqlite3.Row
                 cur = conn.cursor()
                 cur.execute("SELECT * FROM scan_logs ORDER BY id DESC LIMIT ?", (limit,))

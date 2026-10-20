@@ -236,23 +236,135 @@ class TelegramNotifier:
         today_trades: List[Dict[str, Any]],
         open_positions: List[Dict[str, Any]],
         market_stats: Optional[Dict[str, Any]] = None,
+        multi_asset_data: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
-        Send comprehensive end-of-day trading session report to Telegram.
+        Send comprehensive end-of-day multi-asset trading session report to Telegram.
+        Supports unified multi-asset reporting across Gold (XAUUSD), Bitcoin (BTCUSD),
+        and Ethereum (ETHUSD), with Flat Risk architecture and dynamic fallback.
         """
         balance = float(account_info.get("balance", 0.0))
         equity = float(account_info.get("equity", balance))
         free_margin = float(account_info.get("free_margin", 0.0))
         broker_name = str(account_info.get("broker", "XM MT5"))
 
-        current_level = ladder_status.get("current_level", 1)
-        next_lots = ladder_status.get("next_lot_size", 0.03)
-        target_balance = ladder_status.get("next_level_balance", 26.0)
-        ladder_wins = ladder_status.get("wins", 0)
-        ladder_losses = ladder_status.get("losses", 0)
-        ladder_scratches = ladder_status.get("scratches", 0)
-        peak_level = ladder_status.get("peak_level", current_level)
+        if multi_asset_data:
+            total_trades = len(today_trades)
+            wins = sum(1 for t in today_trades if float(t.get("pnl", 0.0)) > 0)
+            losses = sum(1 for t in today_trades if float(t.get("pnl", 0.0)) < 0)
+            scratches = sum(1 for t in today_trades if float(t.get("pnl", 0.0)) == 0)
+            daily_pnl = sum(float(t.get("pnl", 0.0)) for t in today_trades)
+            decided = wins + losses
+            win_rate = (wins / decided * 100) if decided > 0 else 0.0
 
+            pnl_sign = "+$" if daily_pnl >= 0 else "-$"
+            pnl_badge = "🟢 PROFITABLE" if daily_pnl > 0 else "🔴 NEGATIVE" if daily_pnl < 0 else "⚪ FLAT"
+
+            # Check if any asset is using compounding vs flat risk
+            any_compounding = any(
+                d.get("compounding_enabled") or d.get("mode") in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH")
+                for d in multi_asset_data.values()
+            )
+
+            msg = (
+                f"📊 <b>MULTI-ASSET AUTONOMOUS TRADING SYSTEM</b>\n"
+                f"<b>DAILY SESSION PERFORMANCE REPORT</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📅 <b>Date:</b> <code>{date_str}</code> (Post-NY Session)\n"
+                f"⚡ <b>Portfolio Result:</b> {pnl_badge} (<code>{pnl_sign}{abs(daily_pnl):,.2f}</code>)\n\n"
+                f"💼 <b>MT5 BROKER ACCOUNT</b>\n"
+                f"• <b>Balance:</b> <code>${balance:,.2f}</code> | <b>Equity:</b> <code>${equity:,.2f}</code>\n"
+                f"• <b>Free Margin:</b> <code>${free_margin:,.2f}</code>\n"
+                f"• <b>Broker:</b> <code>{broker_name}</code>\n\n"
+            )
+
+            if not any_compounding:
+                msg += (
+                    f"🎯 <b>EXECUTION & RISK ARCHITECTURE</b>\n"
+                    f"• <b>Active Model:</b> <b>Flat Risk</b> (Baseline: $1,000.00 / Asset)\n"
+                    f"• <b>Fixed Risk / Trade:</b> <code>$75.44</code> (7.54% – 8.0%)\n"
+                    f"• <b>Target 1 (Partial TP):</b> <code>1.25R – 1.50R</code> (+$113.16 Realized)\n"
+                    f"• <b>Runner Target 2:</b> <code>3.00R</code> (Risk-Free Breakeven Lock)\n"
+                    f"• <b>Compounding Ladder:</b> <i>Paused / Disabled</i>\n\n"
+                )
+            else:
+                msg += (
+                    f"🪜 <b>EXECUTION & RISK ARCHITECTURE</b>\n"
+                    f"• <b>Active Model:</b> Dynamic Progression Matrix\n\n"
+                )
+
+            msg += "📈 <b>MULTI-ASSET PERFORMANCE BREAKDOWN</b>\n\n"
+
+            for sym, d in multi_asset_data.items():
+                icon = d.get("icon", "🔹")
+                name = d.get("name", sym)
+                t_trades = len(d.get("today_trades", []))
+                t_pnl = float(d.get("today_pnl", 0.0))
+                t_pnl_str = f"+${t_pnl:.2f}" if t_pnl >= 0 else f"-${abs(t_pnl):.2f}"
+                cur_bal = float(d.get("current_balance", 1000.0))
+                w = d.get("total_wins", 0)
+                l = d.get("total_losses", 0)
+                m = d.get("market", {})
+                m_str = (
+                    f"${m['low']:,.2f} – ${m['high']:,.2f} (Close: ${m['close']:,.2f})"
+                    if m.get("high") and m.get("low")
+                    else "Rates Monitored 24/7"
+                )
+
+                msg += (
+                    f"{icon} <b>{name} ({sym}):</b>\n"
+                    f"• <b>Realized Today:</b> <code>{t_pnl_str}</code> ({t_trades} trades)\n"
+                    f"• <b>Day Range:</b> {m_str}\n"
+                    f"• <b>Portfolio Allocation:</b> {w}W - {l}L (Balance: <code>${cur_bal:,.2f}</code>)\n\n"
+                )
+
+            msg += (
+                f"📊 <b>TODAY'S PORTFOLIO SUMMARY</b>\n"
+                f"• <b>Total Realized PnL:</b> <code>{pnl_sign}{abs(daily_pnl):,.2f}</code>\n"
+                f"• <b>Total Trades Closed:</b> {total_trades}\n"
+            )
+
+            if total_trades > 0:
+                msg += f"• <b>Wins:</b> {wins} 🟢 | <b>Losses:</b> {losses} 🔴 | <b>Breakeven:</b> {scratches} ⚪\n"
+                if decided > 0:
+                    msg += f"• <b>Daily Win Rate:</b> <code>{win_rate:.1f}%</code>\n"
+                msg += "\n<b>Recent Closed Trades Today:</b>\n"
+                for t in today_trades[-5:]:
+                    tk = t.get("ticket", "N/A")
+                    tsym = t.get("symbol", "N/A")
+                    tside = t.get("action", "TRADE")
+                    tlots = float(t.get("lots", 0.01))
+                    tpnl = float(t.get("pnl", 0.0))
+                    tpnl_str = f"+${tpnl:.2f}" if tpnl >= 0 else f"-${abs(tpnl):.2f}"
+                    msg += f" • #{tk} {tsym} ({tside} {tlots:.2f}L): <code>{tpnl_str}</code>\n"
+            else:
+                msg += "• <i>No closed trades today (market ranging or criteria preserved).</i>\n"
+
+            if open_positions:
+                msg += f"\n📂 <b>Active Open Positions ({len(open_positions)}):</b>\n"
+                for op in open_positions:
+                    op_ticket = op.get("ticket", "N/A")
+                    op_sym = op.get("symbol", "XAUUSD")
+                    op_side = op.get("side", op.get("action", "BUY"))
+                    op_lots = float(op.get("lots", op.get("volume", 0.01)))
+                    op_pnl = float(op.get("pnl", op.get("profit", 0.0)))
+                    op_pnl_str = f"+${op_pnl:.2f}" if op_pnl >= 0 else f"-${abs(op_pnl):.2f}"
+                    msg += f" • #{op_ticket} {op_sym} {op_side} {op_lots:.2f}L | Floating: <code>{op_pnl_str}</code>\n"
+            else:
+                msg += "\n📂 <b>Active Open Positions:</b> None (Flat overnight)\n"
+
+            msg += (
+                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏰ <i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</i>\n"
+                f"🤖 <i>Institutional Autonomous Multi-Asset Engine (XAU · BTC · ETH)</i>"
+            )
+            return self.send_message(msg)
+
+        # Single-asset fallback
+        is_flat_risk = (
+            ladder_status.get("ladder_mode") == "FLAT_RISK"
+            or not ladder_status.get("compounding_enabled", True)
+        )
         total_trades = len(today_trades)
         wins = sum(1 for t in today_trades if float(t.get("pnl", 0.0)) > 0)
         losses = sum(1 for t in today_trades if float(t.get("pnl", 0.0)) < 0)
@@ -265,7 +377,7 @@ class TelegramNotifier:
         pnl_badge = "🟢 PROFITABLE" if daily_pnl > 0 else "🔴 NEGATIVE" if daily_pnl < 0 else "⚪ FLAT"
 
         msg = (
-            f"📊 <b>GOLD TRADING SYSTEM — DAILY SESSION REPORT</b>\n"
+            f"📊 <b>TRADING SYSTEM — DAILY SESSION REPORT</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📅 <b>Date:</b> <code>{date_str}</code> (Post-NY Session)\n"
             f"⚡ <b>Session Result:</b> {pnl_badge}\n\n"
@@ -274,12 +386,34 @@ class TelegramNotifier:
             f"• <b>Equity:</b> <code>${equity:,.2f}</code>\n"
             f"• <b>Free Margin:</b> <code>${free_margin:,.2f}</code>\n"
             f"• <b>Broker:</b> <code>{broker_name}</code>\n\n"
-            f"🪜 <b>30-LEVEL COMPOUNDING LADDER</b>\n"
-            f"• <b>Current Stage:</b> <b>Level {current_level} of 30</b>\n"
-            f"• <b>Next Target Balance:</b> <code>${target_balance:,.2f}</code>\n"
-            f"• <b>Next Order Lot Size:</b> <code>{next_lots:.2f} lots</code>\n"
-            f"• <b>Total Progression Wins:</b> {ladder_wins} | <b>Losses:</b> {ladder_losses}\n"
-            f"• <b>Peak Level Reached:</b> Level {peak_level}\n\n"
+        )
+
+        if is_flat_risk:
+            fixed_risk = float(ladder_status.get("fixed_risk_usd", 75.44))
+            msg += (
+                f"🎯 <b>EXECUTION & RISK ARCHITECTURE</b>\n"
+                f"• <b>Active Model:</b> <b>Flat Risk</b> (Baseline: $1,000.00)\n"
+                f"• <b>Fixed Risk / Trade:</b> <code>${fixed_risk:.2f}</code> (7.54% – 8.0%)\n"
+                f"• <b>Target 1:</b> <code>1.25R – 1.50R</code> (+$113.16 Realized)\n"
+                f"• <b>Compounding Ladder:</b> <i>Paused / Disabled</i>\n\n"
+            )
+        else:
+            current_level = ladder_status.get("current_level", 1)
+            next_lots = ladder_status.get("next_lot_size", 0.03)
+            target_balance = ladder_status.get("next_level_balance", 26.0)
+            ladder_wins = ladder_status.get("wins", 0)
+            ladder_losses = ladder_status.get("losses", 0)
+            peak_level = ladder_status.get("peak_level", current_level)
+            msg += (
+                f"🪜 <b>30-LEVEL COMPOUNDING LADDER</b>\n"
+                f"• <b>Current Stage:</b> <b>Level {current_level} of 30</b>\n"
+                f"• <b>Next Target Balance:</b> <code>${target_balance:,.2f}</code>\n"
+                f"• <b>Next Order Lot Size:</b> <code>{next_lots:.2f} lots</code>\n"
+                f"• <b>Total Progression Wins:</b> {ladder_wins} | <b>Losses:</b> {ladder_losses}\n"
+                f"• <b>Peak Level Reached:</b> Level {peak_level}\n\n"
+            )
+
+        msg += (
             f"📈 <b>TODAY'S EXECUTION SUMMARY</b>\n"
             f"• <b>Realized PnL:</b> <code>{pnl_sign}{abs(daily_pnl):,.2f}</code>\n"
             f"• <b>Trades Closed:</b> {total_trades}\n"
@@ -318,14 +452,14 @@ class TelegramNotifier:
             m_close = market_stats.get("close")
             if m_high and m_low:
                 msg += (
-                    f"\n🌐 <b>Gold Market Context:</b>\n"
+                    f"\n🌐 <b>Market Context:</b>\n"
                     f"• Day Range: ${m_low:.2f} – ${m_high:.2f} (Close: ${m_close:.2f})\n"
                 )
 
         msg += (
             f"━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"⏰ <i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</i>\n"
-            f"🤖 <i>Institutional 24/7 Gold Engine</i>"
+            f"🤖 <i>Institutional Autonomous Multi-Asset Engine</i>"
         )
         return self.send_message(msg)
 

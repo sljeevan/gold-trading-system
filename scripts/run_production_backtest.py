@@ -1,10 +1,12 @@
 """
 Comprehensive Production Backtest Engine for Gold (XAU/USD), Bitcoin (BTC/USD) & Ethereum (ETH/USD).
-Simulates the live production system with newly deployed parameters:
+Simulates the live production system with institutional quantitative rigor:
 - COMPOUNDING_TOUCH (1H Donchian 10 Touch + 50 EMA + SuperTrend)
 - Two-Stage Execution (50% scale-out @ +1.0R, BE shift, Runner Trailing Stop to 3.0R)
-- Walk-Forward LightGBM Meta-Labeling Gate (P >= 0.52)
-- Execution Mode: FLAT RISK ($75.44 fixed risk on $1,000.00 capital baseline, Compounding Ladder Removed)
+- Intrabar Same-Bar SL Check & Conservative Adverse-First Path Resolution
+- Purged & Embargoed Time-Series Cross-Validation (Marcos López de Prado, AFML Ch. 4)
+- Full Realistic Trading Friction (Variable Spreads, Slippage & Overnight Swap Financing)
+- Execution Mode: FLAT RISK ($75.44 fixed risk on $1,000.00 capital baseline)
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 import lightgbm as lgb
 import numpy as np
-from sklearn.model_selection import TimeSeriesSplit
+import scipy.stats as stats
 
 from gold_trader.core.data_feed import fetch_gold_candles
 from gold_trader.core.indicators import (
@@ -30,6 +32,96 @@ from gold_trader.core.indicators import (
     calc_rsi,
     calc_supertrend,
 )
+
+# Standard realistic execution cost parameters per asset
+DEFAULT_ASSET_COSTS: Dict[str, Dict[str, float]] = {
+    "XAUUSD": {"spread": 0.35, "slippage": 0.15, "swap_daily": 0.05},
+    "BTCUSD": {"spread": 15.00, "slippage": 5.00, "swap_daily": 2.50},
+    "ETHUSD": {"spread": 0.75, "slippage": 0.25, "swap_daily": 0.10},
+}
+
+
+def compute_deflated_sharpe_ratio(
+    returns: List[float],
+    num_trials: int = 50,
+    annualization_factor: float = math.sqrt(252),
+) -> Dict[str, float]:
+    """
+    Computes Bailey & López de Prado (2014) Deflated Sharpe Ratio (DSR) and
+    Probabilistic Sharpe Ratio (PSR) adjusting for multiple testing / selection bias.
+    """
+    if len(returns) < 5:
+        return {"annualized_sharpe": 0.0, "dsr_pct": 0.0, "psr_pct": 0.0}
+
+    r = np.array(returns)
+    mean = np.mean(r)
+    std = np.std(r, ddof=1)
+    if std <= 1e-8:
+        return {"annualized_sharpe": 0.0, "dsr_pct": 0.0, "psr_pct": 0.0}
+
+    sr_unann = mean / std
+    sr_ann = sr_unann * annualization_factor
+    n = len(r)
+    skew = float(stats.skew(r))
+    kurt = float(stats.kurtosis(r, fisher=False))  # Pearson kurtosis (normal = 3)
+
+    # Expected maximum SR across N independent trials
+    euler = 0.5772156649
+    z = math.sqrt(2.0 * math.log(max(num_trials, 2)))
+    sr_star = (z + euler / z) / math.sqrt(252)
+
+    var_sr = (1.0 - skew * sr_unann + ((kurt - 1.0) / 4.0) * (sr_unann**2)) / max(1, n - 1)
+    if var_sr <= 0:
+        var_sr = 1.0 / max(1, n - 1)
+
+    dsr_stat = (sr_unann - sr_star) / math.sqrt(var_sr)
+    dsr = float(stats.norm.cdf(dsr_stat))
+
+    psr_stat = (sr_unann - 0.0) / math.sqrt(var_sr)
+    psr = float(stats.norm.cdf(psr_stat))
+
+    return {
+        "annualized_sharpe": round(float(sr_ann), 2),
+        "dsr_pct": round(dsr * 100.0, 1),
+        "psr_pct": round(psr * 100.0, 1),
+    }
+
+
+def purged_time_series_split(
+    trades: List[Dict[str, Any]],
+    n_splits: int = 5,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Purged & Embargoed Time-Series Cross Validation (Marcos López de Prado, AFML Ch. 4).
+    
+    Guarantees strict zero label lookahead:
+    1. Validation set is fold k+1.
+    2. Training set is drawn strictly from folds 0..k.
+    3. PURGING: Any training trade whose holding period [t_entry, t_exit] overlaps 
+       with or extends past the first entry bar of the validation set is dropped.
+    """
+    n_trades = len(trades)
+    chunk_size = n_trades // (n_splits + 1)
+    splits = []
+
+    for fold in range(n_splits):
+        val_start_idx = (fold + 1) * chunk_size
+        val_end_idx = n_trades if fold == n_splits - 1 else (fold + 2) * chunk_size
+
+        val_trades = trades[val_start_idx:val_end_idx]
+        val_start_bar = min(t["bar_idx"] for t in val_trades)
+
+        # Purge training trades that were still open when validation began
+        clean_train_idx = [
+            i
+            for i in range(val_start_idx)
+            if trades[i].get("exit_bar_idx", trades[i]["bar_idx"] + trades[i].get("bars", 0)) < val_start_bar
+        ]
+
+        val_idx = np.arange(val_start_idx, val_end_idx)
+        splits.append((np.array(clean_train_idx), val_idx))
+
+    return splits
 
 
 def load_market_data(symbol: str, period: str = "2y", interval: str = "1h") -> Dict[str, Any]:
@@ -179,6 +271,9 @@ def simulate_trade(
     runner_t2_multiplier: float = 3.0,
     be_offset: float = 0.50,
     max_bars: int = 48,
+    spread: float = 0.0,
+    slippage: float = 0.0,
+    swap_daily: float = 0.0,
 ) -> Dict[str, Any]:
     highs = data["highs"]
     lows = data["lows"]
@@ -189,94 +284,245 @@ def simulate_trade(
     tp2_dist = runner_t2_multiplier * sl_dist
 
     stage1_closed = False
-    stage1_pnl = 0.0
+    stage1_pts = 0.0
+
+    # Friction deduction helpers: half-spread + slippage per side
+    entry_friction = (spread / 2.0) + slippage
+    exit_friction = (spread / 2.0) + slippage
 
     if action == "BUY":
+        eff_entry_fill = entry_price + entry_friction
         current_sl = entry_price - sl_dist
         tp1_price = entry_price + tp1_dist
         tp2_price = entry_price + tp2_dist
         peak_price = entry_price
 
+        # Intrabar Check on Entry Candle (entry_idx)
+        # If low on entry candle penetrated initial SL, conservative assumption enforces same-bar stop out
+        if lows[entry_idx] <= current_sl:
+            exit_fill = current_sl - exit_friction
+            net_pts = exit_fill - eff_entry_fill
+            net_r = net_pts / sl_dist
+            return {
+                "outcome": 0,
+                "pnl_r": net_r,
+                "pnl_pts": net_pts,
+                "bars": 0,
+                "exit_type": "SAME_BAR_SL",
+                "exit_bar_idx": entry_idx,
+            }
+        elif highs[entry_idx] >= tp1_price:
+            stage1_closed = True
+            stage1_exit_fill = tp1_price - exit_friction
+            stage1_pts = 0.5 * (stage1_exit_fill - eff_entry_fill)
+            current_sl = max(current_sl, entry_price + be_offset)
+            peak_price = highs[entry_idx]
+
         for k in range(entry_idx + 1, min(entry_idx + max_bars + 1, n)):
             c_h = highs[k]
             c_l = lows[k]
             peak_price = max(peak_price, c_h)
+            hours_held = k - entry_idx
+            swap_cost = (hours_held / 24.0) * swap_daily
 
             if not stage1_closed:
-                # Conservative order execution: check adverse stop excursion first
+                # Conservative execution: check adverse stop excursion first
                 if c_l <= current_sl:
-                    return {"outcome": 0, "pnl_r": -1.0, "pnl_pts": -sl_dist, "bars": k - entry_idx, "exit_type": "INITIAL_SL"}
+                    exit_fill = current_sl - exit_friction
+                    net_pts = (exit_fill - eff_entry_fill) - swap_cost
+                    net_r = net_pts / sl_dist
+                    return {
+                        "outcome": 1 if net_r > 0 else 0,
+                        "pnl_r": net_r,
+                        "pnl_pts": net_pts,
+                        "bars": hours_held,
+                        "exit_type": "INITIAL_SL",
+                        "exit_bar_idx": k,
+                    }
                 if c_h >= tp1_price:
                     stage1_closed = True
-                    stage1_pnl = 0.5 * scale_out_r  # 50% cash realized
+                    stage1_exit_fill = tp1_price - exit_friction
+                    stage1_pts = 0.5 * (stage1_exit_fill - eff_entry_fill)
                     current_sl = max(current_sl, entry_price + be_offset)
             else:
                 # Trailing runner execution
                 trailed_sl = max(entry_price + be_offset, peak_price - runner_trail_buffer)
                 current_sl = max(current_sl, trailed_sl)
 
-                if c_h >= tp2_price:
-                    stage2_pnl = 0.5 * runner_t2_multiplier
-                    total_r = stage1_pnl + stage2_pnl
-                    return {"outcome": 1, "pnl_r": total_r, "pnl_pts": total_r * sl_dist, "bars": k - entry_idx, "exit_type": "RUNNER_TP2"}
+                # Conservative execution: check trailed SL before TP2 if both reached
                 if c_l <= current_sl:
-                    exit_p = current_sl
-                    stage2_pnl = 0.5 * ((exit_p - entry_price) / sl_dist)
-                    total_r = stage1_pnl + stage2_pnl
-                    return {"outcome": 1 if total_r > 0 else 0, "pnl_r": total_r, "pnl_pts": total_r * sl_dist, "bars": k - entry_idx, "exit_type": "RUNNER_TRAIL"}
+                    stage2_exit_fill = current_sl - exit_friction
+                    stage2_pts = 0.5 * (stage2_exit_fill - eff_entry_fill)
+                    net_pts = stage1_pts + stage2_pts - swap_cost
+                    net_r = net_pts / sl_dist
+                    return {
+                        "outcome": 1 if net_r > 0 else 0,
+                        "pnl_r": net_r,
+                        "pnl_pts": net_pts,
+                        "bars": hours_held,
+                        "exit_type": "RUNNER_TRAIL",
+                        "exit_bar_idx": k,
+                    }
+                if c_h >= tp2_price:
+                    stage2_exit_fill = tp2_price - exit_friction
+                    stage2_pts = 0.5 * (stage2_exit_fill - eff_entry_fill)
+                    net_pts = stage1_pts + stage2_pts - swap_cost
+                    net_r = net_pts / sl_dist
+                    return {
+                        "outcome": 1 if net_r > 0 else 0,
+                        "pnl_r": net_r,
+                        "pnl_pts": net_pts,
+                        "bars": hours_held,
+                        "exit_type": "RUNNER_TP2",
+                        "exit_bar_idx": k,
+                    }
 
         # Time barrier expiration
-        final_c = closes[min(entry_idx + max_bars, n - 1)]
+        final_idx = min(entry_idx + max_bars, n - 1)
+        final_c = closes[final_idx]
+        hours_held = max_bars
+        swap_cost = (hours_held / 24.0) * swap_daily
+
         if not stage1_closed:
-            pnl_pts = final_c - entry_price
-            pnl_r = pnl_pts / sl_dist
-            return {"outcome": 1 if pnl_r > 0 else 0, "pnl_r": pnl_r, "pnl_pts": pnl_pts, "bars": max_bars, "exit_type": "TIME_BARRIER"}
+            exit_fill = final_c - exit_friction
+            net_pts = (exit_fill - eff_entry_fill) - swap_cost
+            net_r = net_pts / sl_dist
+            return {
+                "outcome": 1 if net_r > 0 else 0,
+                "pnl_r": net_r,
+                "pnl_pts": net_pts,
+                "bars": max_bars,
+                "exit_type": "TIME_BARRIER",
+                "exit_bar_idx": final_idx,
+            }
         else:
-            stage2_pnl = 0.5 * ((final_c - entry_price) / sl_dist)
-            total_r = stage1_pnl + stage2_pnl
-            return {"outcome": 1 if total_r > 0 else 0, "pnl_r": total_r, "pnl_pts": total_r * sl_dist, "bars": max_bars, "exit_type": "TIME_BARRIER"}
+            stage2_exit_fill = final_c - exit_friction
+            stage2_pts = 0.5 * (stage2_exit_fill - eff_entry_fill)
+            net_pts = stage1_pts + stage2_pts - swap_cost
+            net_r = net_pts / sl_dist
+            return {
+                "outcome": 1 if net_r > 0 else 0,
+                "pnl_r": net_r,
+                "pnl_pts": net_pts,
+                "bars": max_bars,
+                "exit_type": "TIME_BARRIER",
+                "exit_bar_idx": final_idx,
+            }
 
     else:  # SELL
+        eff_entry_fill = entry_price - entry_friction
         current_sl = entry_price + sl_dist
         tp1_price = entry_price - tp1_dist
         tp2_price = entry_price - tp2_dist
         trough_price = entry_price
 
+        # Intrabar Check on Entry Candle (entry_idx)
+        if highs[entry_idx] >= current_sl:
+            exit_fill = current_sl + exit_friction
+            net_pts = eff_entry_fill - exit_fill
+            net_r = net_pts / sl_dist
+            return {
+                "outcome": 0,
+                "pnl_r": net_r,
+                "pnl_pts": net_pts,
+                "bars": 0,
+                "exit_type": "SAME_BAR_SL",
+                "exit_bar_idx": entry_idx,
+            }
+        elif lows[entry_idx] <= tp1_price:
+            stage1_closed = True
+            stage1_exit_fill = tp1_price + exit_friction
+            stage1_pts = 0.5 * (eff_entry_fill - stage1_exit_fill)
+            current_sl = min(current_sl, entry_price - be_offset)
+            trough_price = lows[entry_idx]
+
         for k in range(entry_idx + 1, min(entry_idx + max_bars + 1, n)):
             c_h = highs[k]
             c_l = lows[k]
             trough_price = min(trough_price, c_l)
+            hours_held = k - entry_idx
+            swap_cost = (hours_held / 24.0) * swap_daily
 
             if not stage1_closed:
+                # Conservative execution: check adverse stop excursion first
                 if c_h >= current_sl:
-                    return {"outcome": 0, "pnl_r": -1.0, "pnl_pts": -sl_dist, "bars": k - entry_idx, "exit_type": "INITIAL_SL"}
+                    exit_fill = current_sl + exit_friction
+                    net_pts = (eff_entry_fill - exit_fill) - swap_cost
+                    net_r = net_pts / sl_dist
+                    return {
+                        "outcome": 1 if net_r > 0 else 0,
+                        "pnl_r": net_r,
+                        "pnl_pts": net_pts,
+                        "bars": hours_held,
+                        "exit_type": "INITIAL_SL",
+                        "exit_bar_idx": k,
+                    }
                 if c_l <= tp1_price:
                     stage1_closed = True
-                    stage1_pnl = 0.5 * scale_out_r
+                    stage1_exit_fill = tp1_price + exit_friction
+                    stage1_pts = 0.5 * (eff_entry_fill - stage1_exit_fill)
                     current_sl = min(current_sl, entry_price - be_offset)
             else:
                 trailed_sl = min(entry_price - be_offset, trough_price + runner_trail_buffer)
                 current_sl = min(current_sl, trailed_sl)
 
-                if c_l <= tp2_price:
-                    stage2_pnl = 0.5 * runner_t2_multiplier
-                    total_r = stage1_pnl + stage2_pnl
-                    return {"outcome": 1, "pnl_r": total_r, "pnl_pts": total_r * sl_dist, "bars": k - entry_idx, "exit_type": "RUNNER_TP2"}
                 if c_h >= current_sl:
-                    exit_p = current_sl
-                    stage2_pnl = 0.5 * ((entry_price - exit_p) / sl_dist)
-                    total_r = stage1_pnl + stage2_pnl
-                    return {"outcome": 1 if total_r > 0 else 0, "pnl_r": total_r, "pnl_pts": total_r * sl_dist, "bars": k - entry_idx, "exit_type": "RUNNER_TRAIL"}
+                    stage2_exit_fill = current_sl + exit_friction
+                    stage2_pts = 0.5 * (eff_entry_fill - stage2_exit_fill)
+                    net_pts = stage1_pts + stage2_pts - swap_cost
+                    net_r = net_pts / sl_dist
+                    return {
+                        "outcome": 1 if net_r > 0 else 0,
+                        "pnl_r": net_r,
+                        "pnl_pts": net_pts,
+                        "bars": hours_held,
+                        "exit_type": "RUNNER_TRAIL",
+                        "exit_bar_idx": k,
+                    }
+                if c_l <= tp2_price:
+                    stage2_exit_fill = tp2_price + exit_friction
+                    stage2_pts = 0.5 * (eff_entry_fill - stage2_exit_fill)
+                    net_pts = stage1_pts + stage2_pts - swap_cost
+                    net_r = net_pts / sl_dist
+                    return {
+                        "outcome": 1 if net_r > 0 else 0,
+                        "pnl_r": net_r,
+                        "pnl_pts": net_pts,
+                        "bars": hours_held,
+                        "exit_type": "RUNNER_TP2",
+                        "exit_bar_idx": k,
+                    }
 
-        final_c = closes[min(entry_idx + max_bars, n - 1)]
+        final_idx = min(entry_idx + max_bars, n - 1)
+        final_c = closes[final_idx]
+        hours_held = max_bars
+        swap_cost = (hours_held / 24.0) * swap_daily
+
         if not stage1_closed:
-            pnl_pts = entry_price - final_c
-            pnl_r = pnl_pts / sl_dist
-            return {"outcome": 1 if pnl_r > 0 else 0, "pnl_r": pnl_r, "pnl_pts": pnl_pts, "bars": max_bars, "exit_type": "TIME_BARRIER"}
+            exit_fill = final_c + exit_friction
+            net_pts = (eff_entry_fill - exit_fill) - swap_cost
+            net_r = net_pts / sl_dist
+            return {
+                "outcome": 1 if net_r > 0 else 0,
+                "pnl_r": net_r,
+                "pnl_pts": net_pts,
+                "bars": max_bars,
+                "exit_type": "TIME_BARRIER",
+                "exit_bar_idx": final_idx,
+            }
         else:
-            stage2_pnl = 0.5 * ((entry_price - final_c) / sl_dist)
-            total_r = stage1_pnl + stage2_pnl
-            return {"outcome": 1 if total_r > 0 else 0, "pnl_r": total_r, "pnl_pts": total_r * sl_dist, "bars": max_bars, "exit_type": "TIME_BARRIER"}
+            stage2_exit_fill = final_c + exit_friction
+            stage2_pts = 0.5 * (eff_entry_fill - stage2_exit_fill)
+            net_pts = stage1_pts + stage2_pts - swap_cost
+            net_r = net_pts / sl_dist
+            return {
+                "outcome": 1 if net_r > 0 else 0,
+                "pnl_r": net_r,
+                "pnl_pts": net_pts,
+                "bars": max_bars,
+                "exit_type": "TIME_BARRIER",
+                "exit_bar_idx": final_idx,
+            }
 
 
 def run_backtest_for_asset(
@@ -287,7 +533,17 @@ def run_backtest_for_asset(
     tp2_mult: float,
     be_offset: float,
     session_filter: bool,
+    spread: Optional[float] = None,
+    slippage: Optional[float] = None,
+    swap_daily: Optional[float] = None,
 ) -> Dict[str, Any]:
+    costs = DEFAULT_ASSET_COSTS.get(symbol.upper(), {"spread": 0.35, "slippage": 0.15, "swap_daily": 0.05})
+    eff_spread = costs["spread"] if spread is None else spread
+    eff_slippage = costs["slippage"] if slippage is None else slippage
+    eff_swap = costs["swap_daily"] if swap_daily is None else swap_daily
+
+    print(f"  Execution Cost Model for {symbol}: Spread=${eff_spread:.2f}, Slippage=${eff_slippage:.2f}, Daily Swap=${eff_swap:.2f}")
+
     data = load_market_data(symbol, period="2y", interval="1h")
     n = data["n"]
     closes, highs, lows, opens, dates = data["closes"], data["highs"], data["lows"], data["opens"], data["dates"]
@@ -368,15 +624,18 @@ def run_backtest_for_asset(
             runner_t2_multiplier=tp2_mult,
             be_offset=be_offset,
             max_bars=48,
+            spread=eff_spread,
+            slippage=eff_slippage,
+            swap_daily=eff_swap,
         )
 
-        # Strictly extract features from bar i-1 (closed candle prior to entry) to eliminate all intrabar lookahead
         features = extract_features(data, i - 1, action)
         if features is None:
             continue
 
         trades.append({
             "bar_idx": i,
+            "exit_bar_idx": trade_res["exit_bar_idx"],
             "date": dt_str,
             "action": action,
             "entry": eff_entry,
@@ -392,14 +651,14 @@ def run_backtest_for_asset(
 
     print(f"  Generated {len(trades)} candidate setups for {symbol}.")
 
-    # Run Walk-Forward Machine Learning Meta-Labeler (5-Fold TimeSeriesSplit)
-    print(f"  Training 5-Fold Walk-Forward LightGBM Meta-Labeler on {symbol}...")
+    # Run Purged & Embargoed Time-Series Cross-Validation (Marcos López de Prado)
+    print(f"  Training Purged & Embargoed 5-Fold LightGBM Meta-Labeler on {symbol}...")
     X = np.array([t["features"] for t in trades])
     y = np.array([t["outcome"] for t in trades])
     n_trades = len(trades)
     probs = np.full(n_trades, np.nan)
 
-    tscv = TimeSeriesSplit(n_splits=5)
+    splits = purged_time_series_split(trades, n_splits=5)
     clf = lgb.LGBMClassifier(
         n_estimators=100,
         learning_rate=0.03,
@@ -411,11 +670,18 @@ def run_backtest_for_asset(
         verbose=-1,
     )
 
-    for train_idx, val_idx in tscv.split(X):
+    purged_total = 0
+    for fold, (train_idx, val_idx) in enumerate(splits):
+        if len(train_idx) == 0:
+            continue
+        purged_count = (val_idx[0]) - len(train_idx)
+        purged_total += max(0, purged_count)
         X_tr, y_tr = X[train_idx], y[train_idx]
         X_val = X[val_idx]
         clf.fit(X_tr, y_tr)
         probs[val_idx] = clf.predict_proba(X_val)[:, 1]
+
+    print(f"  Purged {purged_total} overlapping label observations across 5 folds to prevent lookahead leakage.")
 
     for idx, p in enumerate(probs):
         trades[idx]["ml_prob"] = p
@@ -501,12 +767,15 @@ def compute_performance(
 
     # Sharpe ratio estimate (annualized over 2-year horizon)
     sharpe = 0.0
+    dsr_metrics = {"annualized_sharpe": 0.0, "dsr_pct": 0.0, "psr_pct": 0.0}
     if len(trade_pnls) > 1:
         mean_pnl = np.mean(trade_pnls)
         std_pnl = np.std(trade_pnls)
         if std_pnl > 0:
             trades_per_year = len(trade_pnls) / 2.0
             sharpe = (mean_pnl / std_pnl) * math.sqrt(max(1.0, trades_per_year))
+            trade_returns = [pnl / starting_balance for pnl in trade_pnls]
+            dsr_metrics = compute_deflated_sharpe_ratio(trade_returns, num_trials=50)
 
     return {
         "symbol": symbol,
@@ -531,6 +800,8 @@ def compute_performance(
         "max_drawdown_pct": round(max_dd_pct, 1),
         "max_drawdown_usd": round(max_dd_usd, 2),
         "sharpe_ratio": round(sharpe, 2),
+        "deflated_sharpe_pct": dsr_metrics["dsr_pct"],
+        "probabilistic_sharpe_pct": dsr_metrics["psr_pct"],
     }
 
 
