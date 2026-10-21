@@ -4,6 +4,7 @@ Unit tests for the Autonomous Gold Live Scanner and Trade Execution Engine.
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from gold_trader.brokers.base import BaseBroker
@@ -253,10 +254,11 @@ class TestGoldAutoTrader(unittest.TestCase):
 
     def test_weekend_market_closed_blocks_execution(self):
         self.trader.config.session_filter = True
-        # If currently Sunday before 22 UTC, evaluate_and_trade should block execution
-        from datetime import datetime, timezone
-        now_dt = datetime.now(timezone.utc)
-        if now_dt.weekday() in (5, 6) and (now_dt.weekday() == 5 or now_dt.hour < 22):
+        # Saturday at 14:00 UTC (Gold market closed)
+        saturday_dt = datetime(2026, 10, 17, 14, 0, 0, tzinfo=timezone.utc)
+        with patch("gold_trader.core.auto_trader.datetime") as mock_dt:
+            mock_dt.now.return_value = saturday_dt
+            mock_dt.fromtimestamp.side_effect = datetime.fromtimestamp
             result = self.trader.evaluate_and_trade()
             self.assertIn("Market Closed", result["decision"])
 

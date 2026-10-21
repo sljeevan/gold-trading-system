@@ -606,7 +606,7 @@ class CompoundingLadderManager:
             # Apply ratchet floor constraint
             floor = self.get_ratchet_floor()
             raw_balance = round(self.state["current_balance"] + realized_pnl, 2)
-            self.state["current_balance"] = max(floor, max(0.0, raw_balance))
+            self.state["current_balance"] = max(floor, 0.0, raw_balance)
 
             # Handle loss policy
             if self.loss_policy == "ONE_STEP_LADDER":

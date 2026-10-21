@@ -172,6 +172,8 @@ class XmMT5Broker(BaseBroker):
         sl: Optional[float] = None,
         tp: Optional[float] = None,
         comment: str = "Gold-Trader-MCP",
+        price: Optional[float] = None,
+        order_type: Literal["MARKET", "LIMIT"] = "MARKET",
     ) -> OrderResult:
         now_str = datetime.now(timezone.utc).isoformat()
         if not self.connected and not self.connect():
@@ -321,7 +323,7 @@ class XmMT5Broker(BaseBroker):
             "timestamp": now_str,
         }
 
-    def close_position(self, ticket: str) -> OrderResult:
+    def close_position(self, ticket: str, lots: Optional[float] = None) -> OrderResult:
         now_str = datetime.now(timezone.utc).isoformat()
         if not self.connected and not self.connect():
             return {
@@ -356,12 +358,14 @@ class XmMT5Broker(BaseBroker):
         tick = mt5.symbol_info_tick(p.symbol)
         close_price = tick.bid if p.type == mt5.ORDER_TYPE_BUY else tick.ask
         close_type = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+        close_vol = min(float(lots), float(p.volume)) if lots is not None and float(lots) > 0 else float(p.volume)
+        close_vol = round(close_vol, 2)
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "position": p.ticket,
             "symbol": p.symbol,
-            "volume": p.volume,
+            "volume": close_vol,
             "type": close_type,
             "price": close_price,
             "deviation": 20,
@@ -378,7 +382,7 @@ class XmMT5Broker(BaseBroker):
                 "ticket": ticket,
                 "symbol": p.symbol,
                 "action": "CLOSE",
-                "lots": float(p.volume),
+                "lots": float(close_vol),
                 "price": close_price,
                 "sl": None,
                 "tp": None,
@@ -391,7 +395,7 @@ class XmMT5Broker(BaseBroker):
             "ticket": ticket,
             "symbol": p.symbol,
             "action": "CLOSE",
-            "lots": float(p.volume),
+            "lots": float(close_vol),
             "price": round(res.price, 2),
             "sl": None,
             "tp": None,

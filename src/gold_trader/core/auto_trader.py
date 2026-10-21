@@ -558,11 +558,18 @@ class GoldAutoTrader:
         # Check Weekend / Session Filter (Restrict entries to active market and liquid London/NY hours)
         now_dt = datetime.now(timezone.utc)
         is_crypto = "BTC" in symbol.upper() or "ETH" in symbol.upper()
-        if self.config.session_filter:
-            is_weekend = now_dt.weekday() == 5 or (now_dt.weekday() == 6 and now_dt.hour < 22)
-            if is_weekend and not is_crypto:
+
+        if not is_crypto:
+            is_weekend = (
+                (now_dt.weekday() == 4 and now_dt.hour >= 21)
+                or now_dt.weekday() == 5
+                or (now_dt.weekday() == 6 and (now_dt.hour < 22 or (now_dt.hour == 22 and now_dt.minute < 5)))
+            )
+            if is_weekend:
                 rejection_reasons.append("Market Closed: Weekend hours (Gold market reopens Sunday 22:05 UTC).")
-            elif not (self.config.session_start_hour_utc <= now_dt.hour < self.config.session_end_hour_utc):
+
+        if self.config.session_filter:
+            if not (self.config.session_start_hour_utc <= now_dt.hour < self.config.session_end_hour_utc):
                 rejection_reasons.append(
                     f"Session Filter: Current time {now_dt.strftime('%H:%M UTC')} is outside liquid London/NY hours "
                     f"({self.config.session_start_hour_utc:02d}:00 - {self.config.session_end_hour_utc:02d}:00 UTC). Avoiding Asian chop."
@@ -868,6 +875,7 @@ class GoldAutoTrader:
                 # -------------------------------------------------------------
                 hit_tp1 = (current_price >= target_1) if side == "BUY" else (current_price <= target_1)
                 if hit_tp1 and not tp1_taken:
+                    scale_out_success = True
                     if cur_lots >= 0.02 and self.config.enable_partial_scale_out:
                         close_lots = round(cur_lots * self.config.partial_scale_out_pct, 2)
                         close_res = self.broker.close_position(ticket=ticket, lots=close_lots)
@@ -885,25 +893,29 @@ class GoldAutoTrader:
                                     update_type="Target 1 Hit! 50% Scaled Out 💰",
                                     details=f"Price hit Target 1 (${target_1:.2f}). Scaled out {close_lots} lots. Banked +${realized_usd:.2f} guaranteed cash.",
                                 )
+                        else:
+                            scale_out_success = False
+                            logger.warning("Partial scale-out failed for #%s: %s. Will retry next tick.", ticket, close_res.get("message"))
 
-                    tracked["tp1_taken"] = 1
+                    if scale_out_success:
+                        tracked["tp1_taken"] = 1
 
-                    # Shift remaining volume to Break-Even + offset (Risk-Free Runner)
-                    new_sl = round(open_price + be_offset, 2) if side == "BUY" else round(open_price - be_offset, 2)
-                    new_tp = target_2 if (self.config.enable_runner_trailing and target_2) else p.get("tp")
-                    res = self.broker.modify_position(ticket=ticket, sl=new_sl, tp=new_tp)
-                    if res.get("status") == "SUCCESS":
-                        tracked["stop_loss"] = new_sl
-                        tracked["target_2"] = new_tp
-                        msg = f"Trailed SL to Break-Even + ${be_offset:.2f} (${new_sl}) for Ticket #{ticket}"
-                        actions_taken.append(msg)
-                        if self.config.send_telegram_alerts:
-                            self.notifier.send_trade_update(
-                                ticket=ticket,
-                                symbol=symbol,
-                                update_type="Risk-Free Runner Activated 🛡️",
-                                details=f"Stop-Loss adjusted to ${new_sl:.2f} (Break-Even + spread). Remaining runner trailing toward Target 2 (${new_tp:.2f}).",
-                            )
+                        # Shift remaining volume to Break-Even + offset (Risk-Free Runner)
+                        new_sl = round(open_price + be_offset, 2) if side == "BUY" else round(open_price - be_offset, 2)
+                        new_tp = target_2 if (self.config.enable_runner_trailing and target_2) else p.get("tp")
+                        res = self.broker.modify_position(ticket=ticket, sl=new_sl, tp=new_tp)
+                        if res.get("status") == "SUCCESS":
+                            tracked["stop_loss"] = new_sl
+                            tracked["target_2"] = new_tp
+                            msg = f"Trailed SL to Break-Even + ${be_offset:.2f} (${new_sl}) for Ticket #{ticket}"
+                            actions_taken.append(msg)
+                            if self.config.send_telegram_alerts:
+                                self.notifier.send_trade_update(
+                                    ticket=ticket,
+                                    symbol=symbol,
+                                    update_type="Risk-Free Runner Activated 🛡️",
+                                    details=f"Stop-Loss adjusted to ${new_sl:.2f} (Break-Even + spread). Remaining runner trailing toward Target 2 (${new_tp:.2f}).",
+                                )
 
                 # -------------------------------------------------------------
                 # STAGE 3: Dynamic Runner Trailing with Wide Buffer

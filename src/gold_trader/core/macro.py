@@ -27,14 +27,15 @@ def analyze_macro_drivers() -> Dict[str, Any]:
             dxy_rsi = calc_rsi(dxy_closes, 14)[-1]
             dxy_price = dxy_closes[-1]
 
-            if dxy_ema20 and dxy_price < dxy_ema20:
-                score += 2
-                dxy_status = "Bearish (Weak Dollar -> Bullish Gold)"
-                signals.append("DXY trading below 20-day EMA (Dollar weakness supports Gold)")
-            else:
-                score -= 2
-                dxy_status = "Bullish (Strong Dollar -> Bearish Gold)"
-                signals.append("DXY trading above 20-day EMA (Dollar strength headwinds for Gold)")
+            if dxy_ema20 is not None:
+                if dxy_price < dxy_ema20:
+                    score += 2
+                    dxy_status = "Bearish (Weak Dollar -> Bullish Gold)"
+                    signals.append("DXY trading below 20-day EMA (Dollar weakness supports Gold)")
+                else:
+                    score -= 2
+                    dxy_status = "Bullish (Strong Dollar -> Bearish Gold)"
+                    signals.append("DXY trading above 20-day EMA (Dollar strength headwinds for Gold)")
 
             if dxy_rsi and dxy_rsi > 65:
                 score += 1
@@ -54,14 +55,15 @@ def analyze_macro_drivers() -> Dict[str, Any]:
             tnx_ema20 = calc_ema(tnx_closes, 20)[-1]
             tnx_price = tnx_closes[-1]
 
-            if tnx_ema20 and tnx_price < tnx_ema20:
-                score += 2
-                yield_status = "Falling Yields (Lower opportunity cost -> Bullish Gold)"
-                signals.append("US 10Y Yields falling below 20-day EMA (Bullish for non-yielding Gold)")
-            else:
-                score -= 2
-                yield_status = "Rising Yields (Higher opportunity cost -> Bearish Gold)"
-                signals.append("US 10Y Yields rising above 20-day EMA (Bearish pressure on Gold)")
+            if tnx_ema20 is not None:
+                if tnx_price < tnx_ema20:
+                    score += 2
+                    yield_status = "Falling Yields (Lower opportunity cost -> Bullish Gold)"
+                    signals.append("US 10Y Yields falling below 20-day EMA (Bullish for non-yielding Gold)")
+                else:
+                    score -= 2
+                    yield_status = "Rising Yields (Higher opportunity cost -> Bearish Gold)"
+                    signals.append("US 10Y Yields rising above 20-day EMA (Bearish pressure on Gold)")
     except Exception as e:
         yield_status = f"Error fetching US10Y: {e}"
 

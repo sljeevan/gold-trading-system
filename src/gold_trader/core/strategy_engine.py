@@ -815,7 +815,8 @@ def generate_donchian_momentum_hybrid_setup(
         "action": action,
         "bias": bias,
         "setup_name": setup_name,
-        "entry_price": round(c, 2),
+        "entry_price": round(eff_entry, 2),
+        "market_price": round(c, 2),
         "stop_loss": stop_loss,
         "stop_distance": round(stop_distance, 2),
         "stop_distance_pips": stop_distance_pips,
@@ -864,7 +865,12 @@ def generate_compounding_ladder_setup(
     if ladder_manager is not None:
         ladder = ladder_manager
     else:
-        ladder_file = "~/.gold_trading_data/btc_compounding_ladder_state.json" if "BTC" in symbol.upper() else None
+        if "BTC" in symbol.upper():
+            ladder_file = "~/.gold_trading_data/btc_compounding_ladder_state.json"
+        elif "ETH" in symbol.upper():
+            ladder_file = "~/.gold_trading_data/eth_compounding_ladder_state.json"
+        else:
+            ladder_file = None
         ladder = CompoundingLadderManager(
             state_file=ladder_file,
             ladder_mode="NOISE_ADAPTIVE_LADDER",

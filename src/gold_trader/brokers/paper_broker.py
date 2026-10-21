@@ -230,7 +230,7 @@ class PaperBroker(BaseBroker):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-    def close_position(self, ticket: str) -> OrderResult:
+    def close_position(self, ticket: str, lots: Optional[float] = None) -> OrderResult:
         now_str = datetime.now(timezone.utc).isoformat()
         with self._db_connection() as conn:
             cursor = conn.cursor()
@@ -250,18 +250,35 @@ class PaperBroker(BaseBroker):
                     "timestamp": now_str,
                 }
 
-            sym, side, lots, open_p, open_t, comm = row
+            sym, side, pos_lots, open_p, open_t, comm = row
             close_p = self._get_current_price(sym)
-            realized_pnl = (close_p - open_p) * lots * 100.0 if side == "BUY" else (open_p - close_p) * lots * 100.0
+            close_vol = min(float(lots), float(pos_lots)) if lots is not None and float(lots) > 0 else float(pos_lots)
+            close_vol = round(close_vol, 2)
+            rem_vol = round(float(pos_lots) - close_vol, 2)
 
-            # Delete from positions and insert into history
-            cursor.execute("DELETE FROM positions WHERE ticket = ?", (ticket,))
+            is_crypto = "BTC" in sym.upper() or "ETH" in sym.upper()
+            contract_size = 1.0 if is_crypto else 100.0
+            realized_pnl = (close_p - open_p) * close_vol * contract_size if side == "BUY" else (open_p - close_p) * close_vol * contract_size
+            realized_pnl = round(realized_pnl, 2)
+
+            if rem_vol <= 0.001:
+                cursor.execute("DELETE FROM positions WHERE ticket = ?", (ticket,))
+            else:
+                cursor.execute("UPDATE positions SET lots = ? WHERE ticket = ?", (rem_vol, ticket))
+
+            # Ensure unique ticket in history for partial closes
+            deal_ticket = ticket
+            cursor.execute("SELECT COUNT(*) FROM trade_history WHERE ticket = ?", (ticket,))
+            if cursor.fetchone()[0] > 0:
+                count = cursor.execute("SELECT COUNT(*) FROM trade_history WHERE ticket LIKE ?", (f"{ticket}%",)).fetchone()[0]
+                deal_ticket = f"{ticket}-C{count}"
+
             cursor.execute(
                 """
                 INSERT INTO trade_history (ticket, symbol, side, lots, open_price, close_price, realized_pnl, open_time, close_time, comment)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (ticket, sym, side, lots, open_p, close_p, realized_pnl, open_t, now_str, comm),
+                (deal_ticket, sym, side, close_vol, open_p, close_p, realized_pnl, open_t, now_str, comm),
             )
             # Update balance
             cursor.execute("UPDATE account SET balance = balance + ? WHERE id = 'PAPER_MAIN'", (realized_pnl,))
@@ -272,10 +289,10 @@ class PaperBroker(BaseBroker):
             "ticket": ticket,
             "symbol": sym,
             "action": "CLOSE",
-            "lots": lots,
+            "lots": close_vol,
             "price": round(close_p, 2),
             "sl": None,
             "tp": None,
-            "message": f"Closed {ticket} at ${close_p:.2f} (Realized PnL: ${realized_pnl:+.2f})",
+            "message": f"Closed {ticket} {close_vol} lots at ${close_p:.2f} (Realized PnL: {'+' if realized_pnl >= 0 else '-'}${abs(realized_pnl):.2f})",
             "timestamp": now_str,
         }

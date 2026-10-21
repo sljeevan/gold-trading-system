@@ -12,7 +12,32 @@ from typing import Any, Dict, List, Literal, Optional
 try:
     from mcp.server.fastmcp import FastMCP
 except (ImportError, ModuleNotFoundError):
-    from mcp.server.mcpserver import MCPServer as FastMCP
+    try:
+        from mcp.server.mcpserver import MCPServer as FastMCP
+    except (ImportError, ModuleNotFoundError):
+        class FastMCP:  # type: ignore
+            def __init__(self, name: str = "", instructions: str = "", **kwargs: Any):
+                self.name = name
+                self.instructions = instructions
+                self.settings = type("Settings", (), {"host": "127.0.0.1", "port": 8001})()
+
+            def tool(self, *args: Any, **kwargs: Any):
+                def decorator(fn: Any) -> Any:
+                    return fn
+                return decorator
+
+            def resource(self, *args: Any, **kwargs: Any):
+                def decorator(fn: Any) -> Any:
+                    return fn
+                return decorator
+
+            def prompt(self, *args: Any, **kwargs: Any):
+                def decorator(fn: Any) -> Any:
+                    return fn
+                return decorator
+
+            def run(self, *args: Any, **kwargs: Any) -> None:
+                pass
 
 from gold_trader.brokers.base import BaseBroker
 from gold_trader.brokers.metaapi_broker import MetaApiBroker
@@ -471,20 +496,22 @@ def train_gold_ml_model(
     symbol: str = "XAUUSD",
     period: str = "1y",
     interval: str = "1h",
-    tp_points: float = 2.00,
-    sl_points: float = 1.54,
+    atr_multiplier_sl: float = 1.5,
+    rr_ratio: float = 1.25,
+    min_sl_pts: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Train or recalibrate the Machine Learning Triple-Barrier Meta-Classifier on historical Gold candles.
     Calculates time-series walk-forward AUC, precision, and high-conviction win rates.
     """
-    predictor = GoldMLPredictor()
+    predictor = GoldMLPredictor(symbol=symbol)
     return predictor.train_model(
         symbol=symbol,
         period=period,
         interval=interval,
-        tp_points=tp_points,
-        sl_points=sl_points,
+        atr_multiplier_sl=atr_multiplier_sl,
+        rr_ratio=rr_ratio,
+        min_sl_pts=min_sl_pts,
     )
 
 

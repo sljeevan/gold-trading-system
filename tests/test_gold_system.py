@@ -170,9 +170,18 @@ class TestGoldTradingSystem(unittest.TestCase):
             mod_res = broker.modify_position(ticket, sl=2460.0, tp=2560.0)
             self.assertEqual(mod_res["status"], "SUCCESS")
 
-            # Close Position
+            # Partial Close Position (close 0.04 of 0.1 lots)
+            partial_res = broker.close_position(ticket, lots=0.04)
+            self.assertEqual(partial_res["status"], "SUCCESS")
+            self.assertEqual(partial_res["lots"], 0.04)
+            pos_mid = broker.get_open_positions()
+            self.assertEqual(len(pos_mid), 1)
+            self.assertAlmostEqual(pos_mid[0]["lots"], 0.06)
+
+            # Close Remaining Position
             close_res = broker.close_position(ticket)
             self.assertEqual(close_res["status"], "SUCCESS")
+            self.assertAlmostEqual(close_res["lots"], 0.06)
 
             # Verify no open positions remain
             positions_after = broker.get_open_positions()

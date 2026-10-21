@@ -84,8 +84,9 @@ class TelegramNotifier:
         reasons = setup.get("reasons", [])
 
         is_btc = "BTC" in symbol.upper()
-        system_title = "BITCOIN TRADING SYSTEM" if is_btc else "GOLD TRADING SYSTEM"
-        engine_label = "Autonomous 24/7 Bitcoin Engine" if is_btc else "Autonomous 24/7 Gold Engine"
+        is_eth = "ETH" in symbol.upper()
+        system_title = "BITCOIN TRADING SYSTEM" if is_btc else ("ETHEREUM TRADING SYSTEM" if is_eth else "GOLD TRADING SYSTEM")
+        engine_label = "Autonomous 24/7 Bitcoin Engine" if is_btc else ("Autonomous 24/7 Ethereum Engine" if is_eth else "Autonomous 24/7 Gold Engine")
 
         side_icon = "🟢" if side == "BUY" else "🔴"
         action_title = f"{side_icon} <b>NEW {side} TRADE EXECUTED</b>"
@@ -134,15 +135,16 @@ class TelegramNotifier:
         Send detailed trade exit notification with realized Profit/Loss and balance.
         """
         is_btc = "BTC" in symbol.upper()
-        system_title = "BITCOIN TRADING SYSTEM" if is_btc else "GOLD TRADING SYSTEM"
-        engine_label = "Autonomous 24/7 Bitcoin Engine" if is_btc else "Autonomous 24/7 Gold Engine"
+        is_eth = "ETH" in symbol.upper()
+        system_title = "BITCOIN TRADING SYSTEM" if is_btc else ("ETHEREUM TRADING SYSTEM" if is_eth else "GOLD TRADING SYSTEM")
+        engine_label = "Autonomous 24/7 Bitcoin Engine" if is_btc else ("Autonomous 24/7 Ethereum Engine" if is_eth else "Autonomous 24/7 Gold Engine")
 
         is_profit = pnl >= 0
         pnl_icon = "💰 🟢" if is_profit else "🛑 🔴"
         status_text = "PROFITABLE TRADE" if is_profit else "STOPPED OUT / LOSS"
 
         price_diff = (close_price - entry_price) if side.upper() == "BUY" else (entry_price - close_price)
-        if is_btc:
+        if is_btc or is_eth:
             diff_text = f" ({'+' if price_diff >= 0 else ''}${price_diff:.2f} pts)"
         else:
             pips = price_diff * 10.0
@@ -180,7 +182,8 @@ class TelegramNotifier:
     ) -> bool:
         """Send trade management update (e.g. Trailing SL to Break-Even)."""
         is_btc = "BTC" in symbol.upper()
-        engine_label = "Autonomous 24/7 Bitcoin Engine" if is_btc else "Autonomous 24/7 Gold Engine"
+        is_eth = "ETH" in symbol.upper()
+        engine_label = "Autonomous 24/7 Bitcoin Engine" if is_btc else ("Autonomous 24/7 Ethereum Engine" if is_eth else "Autonomous 24/7 Gold Engine")
 
         msg = (
             f"🛡️ <b>TRADE MANAGEMENT UPDATE</b>\n"
@@ -207,7 +210,8 @@ class TelegramNotifier:
     ) -> bool:
         """Send notification when 50% partial profit is taken at Target 1 with SL moved to Break-Even."""
         is_btc = "BTC" in symbol.upper()
-        engine_label = "Autonomous 24/7 Bitcoin Engine" if is_btc else "Autonomous 24/7 Gold Engine"
+        is_eth = "ETH" in symbol.upper()
+        engine_label = "Autonomous 24/7 Bitcoin Engine" if is_btc else ("Autonomous 24/7 Ethereum Engine" if is_eth else "Autonomous 24/7 Gold Engine")
 
         msg = (
             f"💰 <b>PARTIAL PROFIT SECURED (TARGET 1 REACHED)</b>\n"

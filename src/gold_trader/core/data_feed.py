@@ -57,9 +57,15 @@ def fetch_gold_candles(
         with urllib.request.urlopen(req, timeout=12) as response:
             raw = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
-        raise RuntimeError(f"Failed to fetch market data for '{symbol}' ({yf_symbol}): {exc}")
+        raise RuntimeError(f"Failed to fetch market data for '{symbol}' ({yf_symbol}): {exc}") from exc
 
-    result = raw["chart"]["result"][0]
+    chart_data = raw.get("chart", {})
+    results = chart_data.get("result")
+    if not results or not results[0]:
+        err_msg = chart_data.get("error", {}).get("description", "No market data results returned")
+        raise RuntimeError(f"Failed to fetch market data for '{symbol}' ({yf_symbol}): {err_msg}")
+
+    result = results[0]
     timestamps = result.get("timestamp", [])
     quotes = result["indicators"]["quote"][0]
 

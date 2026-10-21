@@ -54,6 +54,8 @@ def map_symbol(requested: str) -> str:
         candidates = ["GOLD", "GOLDmicro", "XAUUSD", "GOLD#", "GOLDm", "XAUUSDm", "XAUUSD#"]
     elif "BTC" in requested_upper:
         candidates = ["BTCUSD", "BTCUSD#", "BTCUSDm", "BTC"]
+    elif "ETH" in requested_upper:
+        candidates = ["ETHUSD", "ETHUSD#", "ETHUSDm", "ETH"]
     
     # Priority 1: Candidate with full trading permissions and live ticks
     for c in candidates:

@@ -116,6 +116,7 @@ class MetaApiBroker(BaseBroker):
             data = self._send_request(url, timeout=10)
             if not isinstance(data, list):
                 return []
+            positions: List[Position] = []
             for p in data:
                 sym = p.get("symbol", "")
                 if symbol and sym.upper() != symbol.upper():
@@ -145,6 +146,8 @@ class MetaApiBroker(BaseBroker):
         sl: Optional[float] = None,
         tp: Optional[float] = None,
         comment: str = "Gold-Trader-MCP",
+        price: Optional[float] = None,
+        order_type: Literal["MARKET", "LIMIT"] = "MARKET",
     ) -> OrderResult:
         now_str = datetime.now(timezone.utc).isoformat()
         if not self.token or not self.account_id:
@@ -220,7 +223,7 @@ class MetaApiBroker(BaseBroker):
             "timestamp": now_str,
         }
 
-    def close_position(self, ticket: str) -> OrderResult:
+    def close_position(self, ticket: str, lots: Optional[float] = None) -> OrderResult:
         now_str = datetime.now(timezone.utc).isoformat()
         if not self.token or not self.account_id:
             return {
@@ -237,7 +240,9 @@ class MetaApiBroker(BaseBroker):
             }
 
         url = f"{self.base_url}/users/current/accounts/{self.account_id}/trade"
-        payload = {"actionType": "POSITION_CLOSE_ID", "positionId": ticket}
+        payload: Dict[str, Any] = {"actionType": "POSITION_CLOSE_ID", "positionId": ticket}
+        if lots is not None:
+            payload["volume"] = float(lots)
         try:
             res = self._send_request(url, payload=payload, timeout=12)
             return {
@@ -245,7 +250,7 @@ class MetaApiBroker(BaseBroker):
                 "ticket": ticket,
                 "symbol": "XAUUSD",
                 "action": "CLOSE",
-                "lots": 0.0,
+                "lots": float(lots or 0.0),
                 "price": float(res.get("price", 0.0)),
                 "sl": None,
                 "tp": None,

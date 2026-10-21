@@ -5,7 +5,7 @@ Pure Python implementations with Wilder's smoothing and precise ATR/Supertrend l
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def calc_ema(closes: List[float], period: int) -> List[Optional[float]]:

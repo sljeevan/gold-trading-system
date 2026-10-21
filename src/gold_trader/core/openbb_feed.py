@@ -113,20 +113,23 @@ def check_high_impact_news_window(
 
     if is_in_window and nearest_event:
         ev_obj, diff_m = nearest_event
+        ev_time = ev_obj.get("time_utc")
         return {
             "is_in_news_window": True,
             "minutes_to_nearest_event": diff_m,
             "event_title": ev_obj.get("title", "High-Impact Catalyst"),
-            "event_time_utc": ev_obj.get("time_utc").strftime("%Y-%m-%d %H:%M UTC") if ev_obj.get("time_utc") else "",
+            "event_time_utc": ev_time.strftime("%Y-%m-%d %H:%M UTC") if hasattr(ev_time, "strftime") else str(ev_time or ""),
             "action": "PAUSE",
             "upcoming_events": [ev for ev in events[:5]],
         }
 
+    nearest_ev_obj = nearest_event[0] if nearest_event else None
+    nearest_time = nearest_ev_obj.get("time_utc") if nearest_ev_obj else None
     return {
         "is_in_news_window": False,
         "minutes_to_nearest_event": nearest_event[1] if nearest_event else 999.0,
-        "event_title": nearest_event[0].get("title", "None") if nearest_event else "None",
-        "event_time_utc": nearest_event[0].get("time_utc").strftime("%Y-%m-%d %H:%M UTC") if (nearest_event and nearest_event[0].get("time_utc")) else "",
+        "event_title": nearest_ev_obj.get("title", "None") if nearest_ev_obj else "None",
+        "event_time_utc": nearest_time.strftime("%Y-%m-%d %H:%M UTC") if hasattr(nearest_time, "strftime") else str(nearest_time or ""),
         "action": "TRADE_ALLOWED",
         "upcoming_events": [ev for ev in events[:5]],
     }
