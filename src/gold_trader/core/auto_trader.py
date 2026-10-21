@@ -710,6 +710,13 @@ class GoldAutoTrader:
                             self._save_state("last_trade_bar", str(candle_time))
                             logger.info(f"🔒 Bar Lock engaged for 15m candle bar: {candle_time}")
                         
+                        is_btc_t = "BTC" in symbol.upper()
+                        is_eth_t = "ETH" in symbol.upper()
+                        default_sl_d = 500.0 if is_btc_t else (20.0 if is_eth_t else 8.00)
+                        trade_risk_d = max(abs(filled_price - sl), default_sl_d) if sl else default_sl_d
+                        calc_stage1_tp = round(filled_price + (self.config.scale_out_r * trade_risk_d), 2) if action == "BUY" else round(filled_price - (self.config.scale_out_r * trade_risk_d), 2)
+                        calc_stage2_tp = round(filled_price + (self.config.runner_target_2_multiplier * trade_risk_d), 2) if action == "BUY" else round(filled_price - (self.config.runner_target_2_multiplier * trade_risk_d), 2)
+
                         trade_record = {
                             "ticket": ticket,
                             "symbol": symbol,
@@ -717,8 +724,8 @@ class GoldAutoTrader:
                             "lots": suggested_lots,
                             "entry_price": filled_price,
                             "stop_loss": sl,
-                            "target_1": tp1,
-                            "target_2": tp2,
+                            "target_1": calc_stage1_tp,
+                            "target_2": calc_stage2_tp if self.config.enable_runner_trailing else tp2,
                             "rr_ratio": rr_t1,
                             "comment": order_comment,
                             "status": "PENDING" if order_type == "LIMIT" else "OPEN",
@@ -736,7 +743,7 @@ class GoldAutoTrader:
                                 (timestamp, ticket, symbol, action, lots, entry_price, stop_loss, target_1, target_2, rr_ratio, status, comment, tp1_taken, peak_price, partial_closed_lots, partial_realized_usd)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
-                                (now, ticket, symbol, action, suggested_lots, filled_price, sl, tp1, tp2, rr_t1, "OPEN", order_comment, 0, filled_price, 0.0, 0.0),
+                                (now, ticket, symbol, action, suggested_lots, filled_price, sl, calc_stage1_tp, calc_stage2_tp if self.config.enable_runner_trailing else tp2, rr_t1, "OPEN", order_comment, 0, filled_price, 0.0, 0.0),
                             )
                             conn.commit()
 
@@ -866,14 +873,22 @@ class GoldAutoTrader:
                 # Determine initial risk and R-multiple targets
                 initial_sl = float(tracked.get("stop_loss") or sl or (open_price - default_sl_dist if side == "BUY" else open_price + default_sl_dist))
                 initial_risk_dist = max(abs(open_price - initial_sl), default_sl_dist)
-                target_1 = float(tracked.get("target_1") or (open_price + (self.config.scale_out_r * initial_risk_dist) if side == "BUY" else open_price - (self.config.scale_out_r * initial_risk_dist)))
-                target_2 = float(tracked.get("target_2") or (open_price + (self.config.runner_target_2_multiplier * initial_risk_dist) if side == "BUY" else open_price - (self.config.runner_target_2_multiplier * initial_risk_dist)))
+
+                # Target 1 is strictly calibrated to scale_out_r (default 1.0R) for institutional partial exit & BE
+                calc_t1 = round(open_price + (self.config.scale_out_r * initial_risk_dist), 2) if side == "BUY" else round(open_price - (self.config.scale_out_r * initial_risk_dist), 2)
+                calc_t2 = round(open_price + (self.config.runner_target_2_multiplier * initial_risk_dist), 2) if side == "BUY" else round(open_price - (self.config.runner_target_2_multiplier * initial_risk_dist), 2)
+
+                target_1 = calc_t1
+                target_2 = calc_t2 if self.config.enable_runner_trailing else float(tracked.get("target_2") or tp or calc_t2)
+                tracked["target_1"] = target_1
+                tracked["target_2"] = target_2
                 tp1_taken = bool(tracked.get("tp1_taken", 0))
 
                 # -------------------------------------------------------------
                 # STAGE 1 & 2: Target 1 Reached (+1.0R) -> 50% Scale-Out + Move SL to BE + offset
                 # -------------------------------------------------------------
-                hit_tp1 = (current_price >= target_1) if side == "BUY" else (current_price <= target_1)
+                is_above_be = (current_price >= open_price + be_offset) if side == "BUY" else (current_price <= open_price - be_offset)
+                hit_tp1 = (current_price >= target_1 or (peak_price >= target_1 and is_above_be)) if side == "BUY" else (current_price <= target_1 or (peak_price <= target_1 and is_above_be))
                 if hit_tp1 and not tp1_taken:
                     scale_out_success = True
                     if cur_lots >= 0.02 and self.config.enable_partial_scale_out:

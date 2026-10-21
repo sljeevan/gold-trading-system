@@ -171,7 +171,7 @@ def main():
                     op_p = float(p_info.get("open_price", 0.0))
                     lots = float(p_info.get("lots", 0.0))
                     sl_val = float(p_info.get("sl", 0.0))
-                    profit = float(p_info.get("profit", 0.0))
+                    profit = float(p_info.get("pnl") if p_info.get("pnl") is not None else p_info.get("profit", 0.0))
                     logger.info(
                         f"⚡ [In-Trade Fast Cycle #{in_trade_ticks} | {cfg.symbol}] Price: ${cur_p:.2f} | Entry: ${op_p:.2f} | "
                         f"SL: ${sl_val:.2f} | Lots: {lots:.2f} | Floating PnL: ${profit:+.2f} | Active Polling {cfg.active_interval_seconds}s"

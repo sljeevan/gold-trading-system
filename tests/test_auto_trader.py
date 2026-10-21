@@ -60,8 +60,8 @@ class DummyMockBroker(BaseBroker):
         self.modified.append({"ticket": ticket, "sl": sl, "tp": tp})
         return {"status": "SUCCESS", "ticket": ticket, "sl": sl, "tp": tp, "message": "Modified"}
 
-    def close_position(self, ticket):
-        return {"status": "SUCCESS", "ticket": ticket, "message": "Closed"}
+    def close_position(self, ticket, lots=None, **kwargs):
+        return {"status": "SUCCESS", "ticket": ticket, "lots": lots, "message": "Closed"}
 
 
 class TestGoldAutoTrader(unittest.TestCase):
@@ -172,6 +172,42 @@ class TestGoldAutoTrader(unittest.TestCase):
         actions = self.trader._manage_open_positions(self.broker.open_pos)
         self.assertEqual(len(actions), 0)
         self.assertEqual(len(self.broker.modified), 0)
+
+    def test_trailing_stop_to_breakeven_triggers_at_1r_even_if_tracked_target1_is_higher(self):
+        # Position where entry=83200, SL=82700 (risk=500). 1R is 83700.
+        # Even if DB tracked target_1 was saved as 83825 (1.25R),
+        # reaching 83720 (>= 1.0R) MUST trigger BE and scale-out.
+        self.trader.config.symbol = "BTCUSD"
+        self.trader.tracked_positions["BTC-201"] = {
+            "ticket": "BTC-201",
+            "symbol": "BTCUSD",
+            "action": "BUY",
+            "lots": 0.14,
+            "entry_price": 83200.0,
+            "stop_loss": 82700.0,
+            "target_1": 83825.0,  # Legacy 1.25R stored in DB
+            "target_2": 83825.0,
+            "tp1_taken": 0,
+            "peak_price": 83200.0,
+            "partial_closed_lots": 0.0,
+            "partial_realized_usd": 0.0,
+        }
+        self.broker.open_pos = [{
+            "ticket": "BTC-201",
+            "symbol": "BTCUSD",
+            "side": "BUY",
+            "lots": 0.14,
+            "open_price": 83200.0,
+            "current_price": 83720.0,  # Reached 1.04R (above 1.0R: 83700)
+            "sl": 82700.0,
+            "tp": 83825.0,
+            "pnl": 72.8,
+        }]
+        actions = self.trader._manage_open_positions(self.broker.open_pos)
+        self.assertTrue(len(actions) >= 1)
+        self.assertEqual(self.trader.tracked_positions["BTC-201"]["tp1_taken"], 1)
+        self.assertEqual(len(self.broker.modified), 1)
+        self.assertEqual(self.broker.modified[0]["sl"], 83230.0)  # Break-even + $30 offset for BTC
 
     @patch("gold_trader.core.auto_trader.generate_donchian_breakout_setup")
     def test_evaluate_and_trade_donchian_breakout_mode(self, mock_donchian):
