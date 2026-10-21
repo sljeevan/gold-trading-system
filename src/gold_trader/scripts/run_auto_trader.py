@@ -29,19 +29,19 @@ def main():
     parser.add_argument("--timeframe", default="1h", help="Candle timeframe (5m, 15m, 1h)")
     parser.add_argument(
         "--mode",
-        default="COMPOUNDING_TOUCH",
-        choices=["COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH", "FLAT_RISK_TOUCH", "STANDARD_SWING", "DONCHIAN_BREAKOUT", "DONCHIAN_MOMENTUM_HYBRID"],
-        help="Trading mode",
+        default="FLAT_RISK_TOUCH",
+        choices=["FLAT_RISK_TOUCH", "STANDARD_SWING", "DONCHIAN_BREAKOUT", "DONCHIAN_MOMENTUM_HYBRID", "COMPOUNDING_TOUCH", "COMPOUNDING_LADDER", "COMPOUNDING_HYBRID"],
+        help="Trading mode (default: FLAT_RISK_TOUCH)",
     )
     parser.add_argument("--interval-seconds", type=int, default=60, help="Scan interval in seconds")
     parser.add_argument("--active-interval-seconds", type=int, default=5, help="Scan interval when in active trade (default: 5s)")
     parser.add_argument("--adaptive-dual-speed", action=argparse.BooleanOptionalAction, default=True, help="Enable adaptive dual-speed polling (60s idle / 5s in-trade)")
-    parser.add_argument("--flat-risk", action=argparse.BooleanOptionalAction, default=False, help="Disable compounding ladder and enforce fixed dollar risk on $1,000 baseline")
-    parser.add_argument("--fixed-risk-usd", type=float, default=75.44, help="Fixed dollar risk per trade when in flat risk mode (default: $75.44)")
-    parser.add_argument("--starting-capital", "--initial-capital", type=float, default=None, help="Reset or configure starting capital for compounding ladder (e.g. 1000.0)")
-    parser.add_argument("--ladder-level", type=int, default=None, help="Set starting level (1-37) for compounding ladder (e.g. 18 for $1000)")
+    parser.add_argument("--flat-risk", action=argparse.BooleanOptionalAction, default=True, help="Enforce fixed dollar risk execution (Compounding Removed)")
+    parser.add_argument("--fixed-risk-usd", type=float, default=75.44, help="Fixed dollar risk per trade (default: $75.44)")
+    parser.add_argument("--starting-capital", "--initial-capital", type=float, default=None, help="[Deprecated/Ignored] Starting capital")
+    parser.add_argument("--ladder-level", type=int, default=None, help="[Deprecated/Ignored] Ladder level")
     parser.add_argument("--min-rr", type=float, default=1.25, help="Minimum Risk-Reward ratio (e.g. 1.25 for High-Velocity Touch)")
-    parser.add_argument("--risk-pct", type=float, default=10.0, help="Risk percentage per trade (e.g. 10.0 for Sprint phase)")
+    parser.add_argument("--risk-pct", type=float, default=8.0, help="Risk percentage per trade (default: 8.0%%)")
     parser.add_argument("--donchian-period", type=int, default=10, help="Donchian channel lookback period (default: 10)")
     parser.add_argument("--trend-filter-ema", type=int, default=50, help="Trend filter EMA period (50 or 200, default: 50)")
     parser.add_argument("--trigger-mode", default="TOUCH", choices=["TOUCH", "CLOSE"], help="Trigger mode: TOUCH or CLOSE (default: TOUCH)")
@@ -56,7 +56,7 @@ def main():
     parser.add_argument("--pullback-discount-pips", type=float, default=0.0, help="Pips discount into EMA Value Zone (default: 0.0)")
     parser.add_argument("--max-daily-trades", type=int, default=6, help="Maximum trades executed per calendar day (default: 6)")
     parser.add_argument("--session-filter", action=argparse.BooleanOptionalAction, default=True, help="Restrict entries to 07:00-19:00 UTC London/NY hours")
-    parser.add_argument("--enable-partial-scale-out", action=argparse.BooleanOptionalAction, default=True, help="Enable 50% scale-out at Target 1 (+1.0R)")
+    parser.add_argument("--enable-partial-scale-out", action=argparse.BooleanOptionalAction, default=True, help="Enable 50%% scale-out at Target 1 (+1.0R)")
     parser.add_argument("--partial-scale-out-pct", type=float, default=0.50, help="Partial scale-out percentage (default: 0.50)")
     parser.add_argument("--scale-out-r", type=float, default=1.00, help="Target 1 R-multiple for partial scale out (default: 1.00)")
     parser.add_argument("--enable-runner-trailing", action=argparse.BooleanOptionalAction, default=True, help="Enable dynamic runner trailing after Target 1")
@@ -68,40 +68,12 @@ def main():
     parser.add_argument("--ml-min-prob", type=float, default=0.52, help="Minimum win probability threshold for ML filter (default: 0.52)")
     parser.add_argument("--ml-dynamic-sizing", action=argparse.BooleanOptionalAction, default=False, help="Enable dynamic ML confidence-weighted position sizing (default: False)")
     parser.add_argument("--ml-model-path", default=None, help="Custom path to ML model joblib file")
-    parser.add_argument("--ladder-state-file", default=None, help="Path to compounding ladder state JSON file")
+    parser.add_argument("--ladder-state-file", default=None, help="[Deprecated/Ignored] Path to ladder state JSON file")
     parser.add_argument("--db-path", default=None, help="Path to SQLite database file")
 
     args = parser.parse_args()
 
-    if "BTC" in args.symbol.upper():
-        target_ladder_file = args.ladder_state_file or "~/.gold_trading_data/btc_compounding_ladder_state.json"
-    elif "ETH" in args.symbol.upper():
-        target_ladder_file = args.ladder_state_file or "~/.gold_trading_data/eth_compounding_ladder_state.json"
-    else:
-        target_ladder_file = args.ladder_state_file or "~/.gold_trading_data/compounding_ladder_state.json"
-
-    is_flat_risk = args.flat_risk or (args.mode == "FLAT_RISK_TOUCH")
-
-    if args.starting_capital is not None:
-        from gold_trader.core.compounding_ladder import CompoundingLadderManager
-        mgr = CompoundingLadderManager(
-            state_file=target_ladder_file,
-            ladder_mode="FLAT_RISK" if is_flat_risk else "NOISE_ADAPTIVE_LADDER",
-            loss_policy="ONE_STEP_LADDER" if is_flat_risk else "PROGRESSIVE_RATCHET",
-            fixed_risk_usd=args.fixed_risk_usd,
-        )
-        status = mgr.reset_ladder(starting_balance=args.starting_capital, reset_stats=True)
-        logger.info(f"🪜 Capital state reset to starting balance ${args.starting_capital:.2f} (Target balance: ${status['current_balance']:.2f})")
-    elif args.ladder_level is not None:
-        from gold_trader.core.compounding_ladder import CompoundingLadderManager
-        mgr = CompoundingLadderManager(
-            state_file=target_ladder_file,
-            ladder_mode="FLAT_RISK" if is_flat_risk else "NOISE_ADAPTIVE_LADDER",
-            loss_policy="ONE_STEP_LADDER" if is_flat_risk else "PROGRESSIVE_RATCHET",
-            fixed_risk_usd=args.fixed_risk_usd,
-        )
-        status = mgr.set_level(args.ladder_level)
-        logger.info(f"🪜 Ladder Level manually configured to Level {status['current_level']} (Target balance: ${status['current_balance']:.2f})")
+    is_flat_risk = True
 
     cfg = AutoTraderConfig(
         symbol=args.symbol,
@@ -161,17 +133,9 @@ def main():
     logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
     logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (Buffer: ${cfg.runner_trail_buffer_usd:.2f} | T2: {cfg.runner_target_2_multiplier:.2f}R)")
     logger.info(f"   Polling Cycle: Adaptive Dual-Speed ({cfg.enable_adaptive_dual_speed}) | Idle: {cfg.scan_interval_seconds}s | In-Trade: {cfg.active_interval_seconds}s")
-    if cfg.flat_risk or cfg.mode == "FLAT_RISK_TOUCH" or trader.ladder_manager.ladder_mode == "FLAT_RISK":
-        l_stat = trader.ladder_manager.get_status()
-        logger.info(f"🎯 Execution Sizing: FLAT RISK (Compounding Ladder Disabled)")
-        logger.info(f"   Capital Baseline: ${l_stat.get('starting_balance', 1000.0):.2f} | Fixed Risk: ${cfg.fixed_risk_usd:.2f} per trade")
-        logger.info(f"   Current Balance: ${l_stat.get('current_balance', 1000.0):.2f} | Expected Gain: +${cfg.fixed_risk_usd * 1.5:.2f} (1.5R)")
-    elif cfg.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH"):
-        l_stat = trader.ladder_manager.get_status()
-        next_sp = l_stat.get("next_trade_specs", {})
-        logger.info(f"🪜 Compounding Mode: {l_stat.get('ladder_mode')} (Policy: {l_stat.get('loss_policy')})")
-        logger.info(f"   Level: {l_stat.get('current_level')} ({next_sp.get('phase', 'Sprint')}) | Balance: ${l_stat.get('current_balance'):.2f} | Floor: ${l_stat.get('ratchet_floor', 0.0):.2f}")
-        logger.info(f"   Planned Risk: ${next_sp.get('expected_risk_usd', 0.0):.2f} ({next_sp.get('risk_pct', 0.0)}%) | Target Gain: ${next_sp.get('expected_gain_usd', 0.0):.2f} ({next_sp.get('reward_risk_ratio', 1.25)}R)")
+    logger.info(f"🎯 Execution Sizing: FLAT RISK (Compounding Strategy Removed)")
+    logger.info(f"   Capital Baseline: $1,000.00 | Fixed Risk: ${cfg.fixed_risk_usd:.2f} per trade")
+    logger.info(f"   Expected Target 1 Gain: +${cfg.fixed_risk_usd * cfg.min_risk_reward:.2f} ({cfg.min_risk_reward:.2f}R)")
     logger.info("=" * 60)
 
     if args.once or not args.loop:

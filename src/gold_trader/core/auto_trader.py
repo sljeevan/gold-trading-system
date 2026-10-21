@@ -19,7 +19,6 @@ from typing import Any, Dict, List, Literal, Optional
 from gold_trader.brokers.base import BaseBroker
 from gold_trader.brokers.socket_broker import SocketBroker
 from gold_trader.config import config
-from gold_trader.core.compounding_ladder import CompoundingLadderManager
 from gold_trader.core.data_feed import fetch_gold_candles, get_live_gold_snapshot
 from gold_trader.core.strategy_engine import (
     calculate_lot_size,
@@ -104,25 +103,11 @@ class GoldAutoTrader:
         self.notifier = notifier or TelegramNotifier()
         if "BTC" in self.config.symbol.upper():
             default_db = "~/.gold_trading_data/btc_auto_trader.db"
-            default_ladder = "~/.gold_trading_data/btc_compounding_ladder_state.json"
         elif "ETH" in self.config.symbol.upper():
             default_db = "~/.gold_trading_data/eth_auto_trader.db"
-            default_ladder = "~/.gold_trading_data/eth_compounding_ladder_state.json"
         else:
             default_db = "~/.gold_trading_data/auto_trader.db"
-            default_ladder = "~/.gold_trading_data/compounding_ladder_state.json"
         self.db_path = os.path.expanduser(db_path or self.config.db_path or default_db)
-        ladder_file = self.config.ladder_state_file or default_ladder
-        is_flat_risk = self.config.flat_risk or (self.config.mode == "FLAT_RISK_TOUCH")
-        active_ladder_mode = "FLAT_RISK" if is_flat_risk else "NOISE_ADAPTIVE_LADDER"
-        active_loss_policy = "ONE_STEP_LADDER" if is_flat_risk else "PROGRESSIVE_RATCHET"
-        self.ladder_manager = CompoundingLadderManager(
-            state_file=ladder_file,
-            ladder_mode=active_ladder_mode,
-            loss_policy=active_loss_policy,
-            starting_balance=1000.0,
-            fixed_risk_usd=self.config.fixed_risk_usd,
-        )
 
         self._ensure_db()
         self.is_running = False
@@ -130,6 +115,53 @@ class GoldAutoTrader:
         self.last_trade_bar: Optional[str] = self._get_state("last_trade_bar")
         cooldown_str = self._get_state("cooldown_until_ts")
         self.cooldown_until: Optional[float] = float(cooldown_str) if cooldown_str else None
+
+    @property
+    def ladder_manager(self):
+        """Flat Risk manager stub ensuring complete independence from compounding ladder."""
+        fixed_risk = self.config.fixed_risk_usd
+        class FlatRiskManagerStub:
+            def __init__(self, fixed_risk_val: float):
+                self.ladder_mode = "FLAT_RISK"
+                self.fixed_risk_usd = fixed_risk_val
+            def get_status(self):
+                return {
+                    "ladder_mode": "FLAT_RISK",
+                    "compounding_enabled": False,
+                    "starting_balance": 1000.0,
+                    "current_balance": 1000.0,
+                    "fixed_risk_usd": self.fixed_risk_usd,
+                    "current_level": 18,
+                }
+            def record_trade_result(self, *args, **kwargs):
+                return {"status": "SUCCESS", "mode": "FLAT_RISK"}
+            def calculate_bracket_order(self, current_price: float, direction: str = "BUY", symbol: str = "XAUUSD", atr: Optional[float] = None, rr_ratio: float = 1.25, **kwargs):
+                is_crypto = "BTC" in symbol.upper() or "ETH" in symbol.upper()
+                contract_size = 1.0 if is_crypto else 100.0
+                min_sl = 500.0 if "BTC" in symbol.upper() else (20.0 if "ETH" in symbol.upper() else 8.0)
+                sl_dist = max(round(1.5 * (atr or min_sl), 2), min_sl)
+                lots = max(0.01, round(self.fixed_risk_usd / (sl_dist * contract_size), 2))
+                if "ETH" in symbol.upper():
+                    lots = max(0.02, lots)
+                tp_dist = round(rr_ratio * sl_dist, 2)
+                sl_price = round(current_price - sl_dist, 2) if direction == "BUY" else round(current_price + sl_dist, 2)
+                tp_price = round(current_price + tp_dist, 2) if direction == "BUY" else round(current_price - tp_dist, 2)
+                return {
+                    "order_type": "MARKET",
+                    "market_price": current_price,
+                    "entry_price": current_price,
+                    "lots": lots,
+                    "stop_loss": sl_price,
+                    "take_profit": tp_price,
+                    "breakeven_trigger_price": tp_price,
+                    "pullback_discount_pips": 0.0,
+                    "sl_pips": sl_dist * 10,
+                    "tp_pips": tp_dist * 10,
+                    "expected_loss_usd": self.fixed_risk_usd,
+                    "expected_profit_usd": self.fixed_risk_usd * rr_ratio,
+                    "reward_risk_ratio": rr_ratio,
+                }
+        return FlatRiskManagerStub(fixed_risk)
 
     @staticmethod
     def _is_matching_symbol(pos_symbol: str, target_symbol: str) -> bool:
@@ -372,19 +404,18 @@ class GoldAutoTrader:
         managed_actions = self._manage_open_positions(open_positions)
 
         # 4. Generate Trade Setup based on mode
-        is_touch = (self.config.mode in ("COMPOUNDING_TOUCH", "FLAT_RISK_TOUCH"))
-        is_hybrid = (self.config.mode in ("COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH", "FLAT_RISK_TOUCH") or self.config.timeframe == "1h")
-        if self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH", "FLAT_RISK_TOUCH"):
-            tf = "1h" if is_hybrid else self.config.timeframe
-            strat_mode = "HIGH_VELOCITY_TOUCH_1H" if (is_touch or is_hybrid) else "VALUE_ZONE_15M"
+        is_touch = self.config.mode in ("FLAT_RISK_TOUCH", "COMPOUNDING_TOUCH", "HIGH_VELOCITY_TOUCH")
+        is_compounding_legacy = self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID")
+        if is_touch or is_compounding_legacy:
+            order_type = "MARKET"
             setup = generate_compounding_ladder_setup(
                 symbol=symbol,
-                timeframe=tf,
+                timeframe="1h",
                 ladder_manager=self.ladder_manager,
                 min_win_probability=self.config.ml_min_probability,
-                use_pullback_limit=self.config.use_pullback_limit if not is_hybrid else False,
-                pullback_discount_pips=self.config.pullback_discount_pips if not is_hybrid else 0.0,
-                strategy_mode=strat_mode,
+                use_pullback_limit=False,
+                pullback_discount_pips=0.0,
+                strategy_mode="HIGH_VELOCITY_TOUCH_1H",
                 donchian_period=self.config.donchian_period,
                 rr_multiplier=self.config.min_risk_reward,
                 trend_filter_ema=self.config.trend_filter_ema,
@@ -394,19 +425,10 @@ class GoldAutoTrader:
                 self.log_scan(symbol, 0.0, "ERROR", "None", "HOLD", 0, 0.0, f"Error: {setup.get('error')}", setup)
                 return {"status": "ERROR", "message": setup.get("error"), "timestamp": now}
 
-            order_type = str(setup.get("order_type", "MARKET" if is_hybrid else ("LIMIT" if self.config.use_pullback_limit else "MARKET")))
+            order_type = str(setup.get("order_type", "MARKET"))
             price = float(setup.get("entry_price") or setup.get("market_price") or setup.get("setup_details", {}).get("entry_price") or setup.get("bracket_order_specs", {}).get("market_price") or 0.0)
             bias = str(setup.get("bias") or setup.get("setup_details", {}).get("bias", "NEUTRAL"))
-            is_flat = (self.config.mode == "FLAT_RISK_TOUCH") or (self.config.flat_risk and not str(self.config.mode).startswith("COMPOUNDING"))
-            default_name = (
-                f"1H Donchian 10 Touch (Flat Risk ${self.config.fixed_risk_usd:.2f})"
-                if (is_touch and is_flat)
-                else (
-                    "1H Donchian 10 Touch High-Velocity Compounding"
-                    if is_touch
-                    else ("1H Donchian + Momentum Hybrid Compounding" if is_hybrid else "Compounding Ladder Setup")
-                )
-            )
+            default_name = f"1H Donchian 10 Touch (Flat Risk ${self.config.fixed_risk_usd:.2f})"
             setup_name = str(setup.get("setup_name", default_name))
             action = str(setup.get("action", "HOLD"))
             quality_score = 95 if action in ("BUY", "SELL") else 50
@@ -659,13 +681,7 @@ class GoldAutoTrader:
                             tp1 = round(float(tp1), 2)
                             tp2 = tp1
 
-                    is_flat = (self.config.mode == "FLAT_RISK_TOUCH") or (self.config.flat_risk and not str(self.config.mode).startswith("COMPOUNDING"))
-                    if is_flat:
-                        order_comment = f"AI-FlatRisk-{symbol}"
-                    elif self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH"):
-                        order_comment = f"AI-Compounding-L{level}"
-                    else:
-                        order_comment = f"AI-Auto-{setup_name[:12]}"
+                    order_comment = f"AI-FlatRisk-{symbol}"
                     actual_tp = tp2 if (self.config.enable_partial_scale_out or self.config.enable_runner_trailing or self.config.mode in ("DONCHIAN_BREAKOUT", "DONCHIAN_MOMENTUM_HYBRID", "HYBRID")) and tp2 else tp1
                     order_result = self.broker.place_order(
                         symbol="GOLD" if "GOLD" in symbol else symbol,
@@ -1026,31 +1042,7 @@ class GoldAutoTrader:
                     ticket, pnl, self.config.loss_cooldown_minutes
                 )
 
-            # If trade was part of the Compounding Ladder or Flat Risk, record trade result
-            is_managed_strategy_trade = (
-                "compounding" in comment.lower()
-                or "ladder" in comment.lower()
-                or "flat" in comment.lower()
-                or self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID", "COMPOUNDING_TOUCH", "FLAT_RISK_TOUCH")
-                or self.config.flat_risk
-            )
-            if is_managed_strategy_trade:
-                try:
-                    ladder = self.ladder_manager
-                    be_cutoff = 1.00 if is_btc else (0.50 if is_eth else 0.35)
-                    is_be = abs(pnl) <= be_cutoff
-                    is_win = pnl > be_cutoff
-                    ladder_update = ladder.record_trade_result(
-                        win=is_win,
-                        realized_pnl=pnl,
-                        exit_price=close_price,
-                        is_breakeven=is_be,
-                        notes=f"AutoTrader Ticket #{ticket} closed at {close_price}",
-                    )
-                    mode_lbl = "Flat Risk ($75.44 Risk)" if ladder.ladder_mode == "FLAT_RISK" else f"Compounding Level {ladder_update.get('new_level')}"
-                    logger.info(f"Execution logged after Ticket #{ticket} ({mode_lbl}): {ladder_update}")
-                except Exception as e:
-                    logger.error(f"Failed to update trading execution state on trade exit: {e}")
+            logger.info("📊 Trade #%s closed at $%.2f (Net PnL: $%.2f). Recorded in trade_executions DB.", ticket, close_price, pnl)
 
             if self.config.send_telegram_alerts:
                 self.notifier.send_trade_exit(

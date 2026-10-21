@@ -47,33 +47,35 @@ graph TD
 
 ---
 
-## 2. The Compounding Ladder System
+## 2. Production Execution Architecture: Flat Dollar Risk (Compounding Strategy Removed)
 
-The core quantitative scaling mechanism is managed by [`CompoundingLadderManager`](file:///home/mcpuser/MCP/gold-trading-system/src/gold_trader/core/compounding_ladder.py#L73).
+The trading engine executes strictly under **Flat Dollar Risk Allocation** on a **$1,000.00 Capital Baseline** per asset. Compounding ladder progression has been **completely removed from active trading operations** following quantitative audits and Monte Carlo stress tests showing exponential sequence fragility.
 
-- **Matrix**: 30 discrete exponential levels scaling from **$20.00 micro-seed** to **$52,384.00**, plus a 37-level **Noise-Adaptive Matrix** ($100 to $5,337.29).
-- **State File**: [`~/.gold_trading_data/compounding_ladder_state.json`](file:///home/mcpuser/.gold_trading_data/compounding_ladder_state.json)
-- **Active System Capital Baseline**: **$1,000.00 Starting Capital** | Execution Mode: **`FLAT_RISK` (Compounding Ladder Disabled)** | Fixed Planned Risk: **$75.44 (7.54% – 8.0%)** | Target Gain: **+$113.16 (1.5R)** | Compounding: **Disabled (Flat Risk on $1,000 Baseline)**.
-- **Sample Level Specs**:
-  - Level 1: $20.00 Starting Balance | Target Gain: +$6.00 (30%) | Planned Risk: $5.00 (23%) | Target: $26.00.
-  - Level 10: $212.00 Starting Balance | Target Gain: +$64.00 | Planned Risk: $49.00.
-  - Level 18 (Active at $1,000): $942.95 Starting Balance | Target Gain: +$113.15 (12%) | Planned Risk: $75.44 (8%) | Target: $1,056.10.
-  - Level 20: $2,923.00 Starting Balance | Target Gain: +$877.00 | Planned Risk: $672.00.
-  - Level 30: $40,296.00 Starting Balance | Target Gain: +$12,089.00 | Target: $52,384.00.
+- **Capital Baseline**: **$1,000.00 Starting Seed per Asset** (Gold, Bitcoin, Ethereum)
+- **Active Execution Mode**: **`FLAT_RISK_TOUCH`** (Fixed Dollar Risk per Trade)
+- **Fixed Risk per Trade**: **$75.44** (7.54% – 8.0% of $1,000 baseline)
+- **Position Sizing Formula**: $\text{Lots} = \text{round}\left(\frac{\text{Fixed Risk USD}}{\text{SL Distance Points} \times \text{Contract Size}}, 2\right)$
+  - *Spot Gold (XAUUSD)*: $\text{Lots} = \text{round}\left(\frac{\$75.44}{\text{SL Points} \times 100}, 2\right)$ (Min $\text{SL} \ge \$8.00$)
+  - *Bitcoin (BTCUSD)*: $\text{Lots} = \text{round}\left(\frac{\$75.44}{\text{SL Points} \times 1.0}, 2\right)$ (Min $\text{SL} \ge \$500.00$)
+  - *Ethereum (ETHUSD)*: $\text{Lots} = \text{round}\left(\frac{\$75.44}{\text{SL Points} \times 1.0}, 2\right)$ (Min $\text{SL} \ge \$20.00$)
+- **Target 1 Objective**: **1.25R – 1.50R** (+$94.30 to +$113.16 Realized)
+- **Compounding Status**: **Completely Removed** (Zero ladder state files required in production).
 
-### 2.1 Execution Strategies Supported
-1. **`COMPOUNDING_TOUCH` (Active Production Strategy - High-Velocity Touch with Institutional Two-Stage Management)**:
-   - **Engine**: 1H Donchian 10 Touch + SuperTrend (10, 3.0) + 50 EMA trend filter.
-   - **Entry**: Intrabar price penetration/touch of previous 10-bar Donchian band (immediate wholesale liquidity grab without waiting for 1H bar close).
-   - **Initial Protection**: Dynamic ATR stop $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$8.00)$.
-   - **Institutional Two-Stage Execution**:
-     - *Stage 1 (Partial Scale-Out)*: At Target 1 (+1.0R), 50% volume is closed into realized cash for positions $\ge 0.02$ lots.
-     - *Stage 2 (Risk-Free Runner)*: Remaining stop-loss moves to Break-Even + $0.50 ($\text{open\_price} \pm \$0.50$), locking in a completely risk-free runner.
-     - *Stage 3 (Dynamic Wide Trail)*: Runner trailing stop follows price with a $4.50 ATR-cleared buffer behind peak excursion up to Target 2 (3.0R).
-   - **Adaptive Dual-Speed Polling Loop**:
-     - *Idle State (`open_positions == 0`)*: 60-second cycle for 1H candle fetches, ML Meta-Labeling predictions, and wholesale entry evaluation.
-     - *In-Trade State (`open_positions > 0`)*: 5-second fast cycle focused exclusively on peak excursion tracking, +1.0R scale-outs, break-even locking, trailing stops, and instant exit notifications with zero DB bloat.
-   - **Lot Sizing**: Dynamic dollar risk allocation based on ladder stage: $\text{Lots} = \text{round}\left(\frac{\text{Planned Risk USD}}{\text{SL Points} \times 100}, 2\right)$.
+### 2.1 Production Strategy: High-Velocity Touch (`FLAT_RISK_TOUCH`)
+1. **Strategy Engine**:
+   - 1H Donchian 10 Touch + SuperTrend (10, 3.0) + 50 EMA trend filter.
+   - Intrabar price penetration/touch of previous 10-bar Donchian band (immediate wholesale liquidity grab without waiting for 1H bar close).
+2. **Dynamic Volatility Stops**:
+   - Gold: $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$8.00)$
+   - Bitcoin: $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$500.00)$
+   - Ethereum: $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$20.00)$
+3. **Institutional Two-Stage Execution**:
+   - *Stage 1 (Partial Scale-Out)*: At Target 1 (+1.0R), 50% volume is closed into realized cash for positions $\ge 0.02$ lots.
+   - *Stage 2 (Risk-Free Runner)*: Remaining stop-loss moves to Break-Even + offset ($+\$0.50$ Gold, $+\$30.00$ BTC, $+\$2.00$ ETH), locking in a risk-free runner.
+   - *Stage 3 (Dynamic Wide Trail)*: Runner trailing stop follows price with an ATR-cleared buffer ($4.50 Gold, $350 BTC, $10 ETH) behind peak excursion up to Target 2 (3.0R).
+4. **Adaptive Dual-Speed Polling Loop**:
+   - *Idle State (`open_positions == 0`)*: 60-second cycle for 1H candle fetches, ML Meta-Labeling predictions, and wholesale entry evaluation.
+   - *In-Trade State (`open_positions > 0`)*: 5-second fast cycle focused exclusively on peak excursion tracking, +1.0R scale-outs, break-even locking, trailing stops, and instant exit notifications with zero DB bloat.
 2. **`COMPOUNDING_HYBRID` (1H Donchian 15 Breakout)**:
    - **Engine**: 1H Donchian 15 Breakout + MACD Momentum continuation + 200 EMA trend filter.
    - **Stops**: Dynamic ATR-based stops: $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$8.00)$.

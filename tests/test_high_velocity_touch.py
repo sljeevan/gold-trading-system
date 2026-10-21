@@ -261,7 +261,7 @@ class TestHighVelocityTouchStrategy(unittest.TestCase):
         order = self.broker.orders[0]
         self.assertEqual(order["action"], "BUY")
         self.assertEqual(order["lots"], 0.02)
-        self.assertEqual(order["comment"], "AI-Compounding-L5")
+        self.assertEqual(order["comment"], "AI-FlatRisk-XAUUSD")
 
 
 if __name__ == "__main__":

@@ -31,6 +31,5 @@ exec /usr/bin/python3 -u -m gold_trader.scripts.run_auto_trader \
     --runner-target-2-multiplier 3.00 \
     --enable-ml-filter \
     --ml-min-prob 0.44 \
-    --ladder-state-file /home/mcpuser/.gold_trading_data/btc_compounding_ladder_state.json \
     --db-path /home/mcpuser/.gold_trading_data/btc_auto_trader.db \
     --loop 2>&1 | tee -a /home/mcpuser/MCP/gold-trading-system/btc_auto_trader.log

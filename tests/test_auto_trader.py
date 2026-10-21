@@ -249,7 +249,7 @@ class TestGoldAutoTrader(unittest.TestCase):
         self.assertEqual(len(self.broker.orders), 1)
         self.assertEqual(self.broker.orders[0]["action"], "BUY")
         self.assertEqual(self.broker.orders[0]["lots"], 0.03)
-        self.assertIn("AI-Compounding-L10", self.broker.orders[0]["comment"])
+        self.assertIn("AI-FlatRisk-XAUUSD", self.broker.orders[0]["comment"])
 
     def test_weekend_market_closed_blocks_execution(self):
         self.trader.config.session_filter = True
