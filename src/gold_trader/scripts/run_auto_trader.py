@@ -34,6 +34,8 @@ def main():
         help="Trading mode",
     )
     parser.add_argument("--interval-seconds", type=int, default=60, help="Scan interval in seconds")
+    parser.add_argument("--active-interval-seconds", type=int, default=5, help="Scan interval when in active trade (default: 5s)")
+    parser.add_argument("--adaptive-dual-speed", action=argparse.BooleanOptionalAction, default=True, help="Enable adaptive dual-speed polling (60s idle / 5s in-trade)")
     parser.add_argument("--flat-risk", action=argparse.BooleanOptionalAction, default=False, help="Disable compounding ladder and enforce fixed dollar risk on $1,000 baseline")
     parser.add_argument("--fixed-risk-usd", type=float, default=75.44, help="Fixed dollar risk per trade when in flat risk mode (default: $75.44)")
     parser.add_argument("--starting-capital", "--initial-capital", type=float, default=None, help="Reset or configure starting capital for compounding ladder (e.g. 1000.0)")
@@ -112,6 +114,8 @@ def main():
         min_quality_score=args.min_quality,
         max_open_positions=args.max_positions,
         scan_interval_seconds=args.interval_seconds,
+        active_interval_seconds=args.active_interval_seconds,
+        enable_adaptive_dual_speed=args.adaptive_dual_speed,
         auto_execute=not args.dry_run,
         trail_to_breakeven_at_t1=True,
         one_trade_per_bar=args.one_trade_per_bar,
@@ -156,6 +160,7 @@ def main():
     logger.info(f"   Auto Execute: {cfg.auto_execute} | Max Open: {cfg.max_open_positions}")
     logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
     logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (Buffer: ${cfg.runner_trail_buffer_usd:.2f} | T2: {cfg.runner_target_2_multiplier:.2f}R)")
+    logger.info(f"   Polling Cycle: Adaptive Dual-Speed ({cfg.enable_adaptive_dual_speed}) | Idle: {cfg.scan_interval_seconds}s | In-Trade: {cfg.active_interval_seconds}s")
     if cfg.flat_risk or cfg.mode == "FLAT_RISK_TOUCH" or trader.ladder_manager.ladder_mode == "FLAT_RISK":
         l_stat = trader.ladder_manager.get_status()
         logger.info(f"🎯 Execution Sizing: FLAT RISK (Compounding Ladder Disabled)")
@@ -178,21 +183,62 @@ def main():
         return
 
     # Loop mode
-    logger.info(f"Entering continuous monitoring loop (Interval: {cfg.scan_interval_seconds}s)...")
+    logger.info(f"Entering continuous monitoring loop (Idle: {cfg.scan_interval_seconds}s | In-Trade: {cfg.active_interval_seconds}s)...")
     cycle = 1
+    in_trade_ticks = 0
     while True:
         try:
-            logger.info(f"\n--- [Cycle #{cycle}] Scanning {cfg.symbol} Market @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} ---")
-            res = trader.evaluate_and_trade()
-            logger.info(f"Price: ${res.get('current_price')} | Trend: {res.get('bias')} | Setup: {res.get('setup_name')} | Score: {res.get('quality_score')}")
-            logger.info(f"Decision: {res.get('decision')}")
-            if res.get("order_result"):
-                logger.info(f"⚡ ORDER EVENT: {res.get('order_result')}")
-            if res.get("managed_actions"):
-                logger.info(f"🛡️ POSITION MANAGEMENT: {res.get('managed_actions')}")
-                
-            cycle += 1
-            time.sleep(cfg.scan_interval_seconds)
+            # Check if we currently have an active open position for our symbol
+            matching_positions = trader.get_matching_open_positions()
+            is_in_trade = len(matching_positions) > 0
+
+            if is_in_trade and cfg.enable_adaptive_dual_speed:
+                in_trade_ticks += 1
+                res = trader.manage_active_positions()
+                managed_actions = res.get("managed_actions", [])
+
+                # If an action was taken (partial scale out, BE move, trailing SL):
+                if managed_actions:
+                    logger.info(f"🛡️ [In-Trade Fast Tick #{in_trade_ticks}] ACTION: {managed_actions}")
+                elif in_trade_ticks % 12 == 1:
+                    # Periodic heartbeat log every ~60 seconds (12 ticks * 5s) to avoid log spam
+                    p_info = matching_positions[0] if matching_positions else {}
+                    cur_p = float(p_info.get("current_price", 0.0))
+                    op_p = float(p_info.get("open_price", 0.0))
+                    lots = float(p_info.get("lots", 0.0))
+                    sl_val = float(p_info.get("sl", 0.0))
+                    profit = float(p_info.get("profit", 0.0))
+                    logger.info(
+                        f"⚡ [In-Trade Fast Cycle #{in_trade_ticks} | {cfg.symbol}] Price: ${cur_p:.2f} | Entry: ${op_p:.2f} | "
+                        f"SL: ${sl_val:.2f} | Lots: {lots:.2f} | Floating PnL: ${profit:+.2f} | Active Polling {cfg.active_interval_seconds}s"
+                    )
+
+                # If position closed during this fast tick:
+                if res.get("open_positions_count", 0) == 0:
+                    logger.info(f"🏁 Active position closed! Transitioning back to normal {cfg.scan_interval_seconds}s market scan.")
+                    in_trade_ticks = 0
+                    time.sleep(cfg.active_interval_seconds)
+                    continue
+
+                time.sleep(cfg.active_interval_seconds)
+            else:
+                in_trade_ticks = 0
+                logger.info(f"\n--- [Cycle #{cycle}] Scanning {cfg.symbol} Market @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} ---")
+                res = trader.evaluate_and_trade()
+                logger.info(f"Price: ${res.get('current_price')} | Trend: {res.get('bias')} | Setup: {res.get('setup_name')} | Score: {res.get('quality_score')}")
+                logger.info(f"Decision: {res.get('decision')}")
+                if res.get("order_result"):
+                    logger.info(f"⚡ ORDER EVENT: {res.get('order_result')}")
+                if res.get("managed_actions"):
+                    logger.info(f"🛡️ POSITION MANAGEMENT: {res.get('managed_actions')}")
+
+                cycle += 1
+                order_res = res.get("order_result")
+                if order_res and order_res.get("status") == "SUCCESS":
+                    logger.info(f"🚀 New position entered! Engaging {cfg.active_interval_seconds}-second fast position management loop.")
+                    time.sleep(cfg.active_interval_seconds)
+                else:
+                    time.sleep(cfg.scan_interval_seconds)
         except KeyboardInterrupt:
             logger.info("\nAuto-Trader stopped by user.")
             break

@@ -70,6 +70,9 @@ The core quantitative scaling mechanism is managed by [`CompoundingLadderManager
      - *Stage 1 (Partial Scale-Out)*: At Target 1 (+1.0R), 50% volume is closed into realized cash for positions $\ge 0.02$ lots.
      - *Stage 2 (Risk-Free Runner)*: Remaining stop-loss moves to Break-Even + $0.50 ($\text{open\_price} \pm \$0.50$), locking in a completely risk-free runner.
      - *Stage 3 (Dynamic Wide Trail)*: Runner trailing stop follows price with a $4.50 ATR-cleared buffer behind peak excursion up to Target 2 (3.0R).
+   - **Adaptive Dual-Speed Polling Loop**:
+     - *Idle State (`open_positions == 0`)*: 60-second cycle for 1H candle fetches, ML Meta-Labeling predictions, and wholesale entry evaluation.
+     - *In-Trade State (`open_positions > 0`)*: 5-second fast cycle focused exclusively on peak excursion tracking, +1.0R scale-outs, break-even locking, trailing stops, and instant exit notifications with zero DB bloat.
    - **Lot Sizing**: Dynamic dollar risk allocation based on ladder stage: $\text{Lots} = \text{round}\left(\frac{\text{Planned Risk USD}}{\text{SL Points} \times 100}, 2\right)$.
 2. **`COMPOUNDING_HYBRID` (1H Donchian 15 Breakout)**:
    - **Engine**: 1H Donchian 15 Breakout + MACD Momentum continuation + 200 EMA trend filter.

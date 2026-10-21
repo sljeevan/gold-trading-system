@@ -54,6 +54,8 @@ class AutoTraderConfig:
     max_open_positions: int = 2
     max_spread_pips: float = 4.0
     scan_interval_seconds: int = 60
+    active_interval_seconds: int = 5
+    enable_adaptive_dual_speed: bool = True
     auto_execute: bool = True
     trail_to_breakeven_at_t1: bool = True
     send_telegram_alerts: bool = True
@@ -141,6 +143,62 @@ class GoldAutoTrader:
         if "GOLD" in t_u or "XAU" in t_u:
             return ("GOLD" in p_u or "XAU" in p_u)
         return p_u.startswith(t_u) or t_u.startswith(p_u)
+
+    def get_matching_open_positions(self) -> List[Dict[str, Any]]:
+        """Fetch active broker positions matching this trader's symbol family."""
+        try:
+            positions = self.broker.get_open_positions()
+            return [p for p in positions if self._is_matching_symbol(str(p.get("symbol", "")), self.config.symbol)]
+        except Exception as e:
+            logger.debug(f"Failed to fetch open positions: {e}")
+            return []
+
+    def has_open_position(self) -> bool:
+        """Check if there is currently an active open position for this trader's symbol family."""
+        return len(self.get_matching_open_positions()) > 0
+
+    def manage_active_positions(self) -> Dict[str, Any]:
+        """
+        Fast-tick position management cycle (Adaptive 5-second interval):
+        - Evaluates peak price excursion
+        - Executes 50% scale-out at Target 1 (+1.0R) into banked cash
+        - Adjusts Stop-Loss to Break-Even + offset (Risk-Free Runner)
+        - Trails runner Stop-Loss with wide buffer behind peak excursion
+        - Detects broker exit deal receipts and dispatches Telegram notifications
+        - Bypasses 1H indicator calculations and database scan logging (zero DB bloat)
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        symbol = self.config.symbol
+        try:
+            acct = self.broker.get_account_info()
+            balance = float(acct.get("balance", 10000.0))
+            if balance <= 0:
+                balance = 10000.0
+        except Exception:
+            balance = 10000.0
+
+        try:
+            open_positions = self.broker.get_open_positions()
+        except Exception:
+            open_positions = []
+
+        sym_open_positions = [p for p in open_positions if self._is_matching_symbol(str(p.get("symbol", "")), symbol)]
+
+        # 1. Detect closed positions (exits) and dispatch alerts / update state
+        self._detect_and_notify_exits(open_positions, current_balance=balance)
+
+        # 2. Manage existing open positions (Trailing SL / Breakeven / Partial scale out)
+        managed_actions = self._manage_open_positions(open_positions)
+
+        return {
+            "status": "FAST_MANAGE",
+            "timestamp": now,
+            "symbol": symbol,
+            "open_positions": sym_open_positions,
+            "open_positions_count": len(sym_open_positions),
+            "managed_actions": managed_actions,
+            "decision": "ACTIVE_POSITION_MANAGED" if managed_actions else "MONITORING_ACTIVE_POSITION",
+        }
 
     @contextmanager
     def _db_connection(self):

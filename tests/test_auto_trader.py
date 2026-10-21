@@ -276,6 +276,40 @@ class TestGoldAutoTrader(unittest.TestCase):
         self.assertEqual(len(history["scans"]), 1)
         self.assertEqual(history["scans"][0]["setup_name"], "Test Setup")
 
+    def test_get_matching_open_positions_and_has_open_position(self):
+        # When empty
+        self.broker.open_pos = []
+        self.assertFalse(self.trader.has_open_position())
+        self.assertEqual(self.trader.get_matching_open_positions(), [])
+
+        # When non-matching symbol (BTCUSD while trader is XAUUSD)
+        self.broker.open_pos = [{"ticket": "1001", "symbol": "BTCUSD", "lots": 0.1, "open_price": 82000.0, "current_price": 82500.0, "side": "BUY"}]
+        self.assertFalse(self.trader.has_open_position())
+        self.assertEqual(self.trader.get_matching_open_positions(), [])
+
+        # When matching symbol
+        self.broker.open_pos = [{"ticket": "1002", "symbol": "XAUUSD", "lots": 0.03, "open_price": 4150.0, "current_price": 4160.0, "side": "BUY"}]
+        self.assertTrue(self.trader.has_open_position())
+        matching = self.trader.get_matching_open_positions()
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["ticket"], "1002")
+
+    def test_manage_active_positions_fast_cycle(self):
+        self.broker.open_pos = [{
+            "ticket": "2001",
+            "symbol": "XAUUSD",
+            "lots": 0.02,
+            "open_price": 4150.0,
+            "current_price": 4155.0,
+            "side": "BUY",
+            "sl": 4140.0,
+            "tp": 4180.0,
+        }]
+        res = self.trader.manage_active_positions()
+        self.assertEqual(res["status"], "FAST_MANAGE")
+        self.assertEqual(res["open_positions_count"], 1)
+        self.assertIn("decision", res)
+
 
 if __name__ == "__main__":
     unittest.main()
