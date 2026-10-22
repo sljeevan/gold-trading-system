@@ -339,7 +339,7 @@ def gold_auto_trader_scan(
     min_rr: float = 1.5,
     risk_pct: float = 1.0,
     min_quality: int = 80,
-    max_positions: int = 2,
+    max_positions: int = 0,
     auto_execute: bool = False,
 ) -> Dict[str, Any]:
     """

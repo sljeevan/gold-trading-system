@@ -59,6 +59,7 @@ The trading engine executes strictly under **Flat Dollar Risk Allocation** on a 
   - *Bitcoin (BTCUSD)*: $\text{Lots} = \text{round}\left(\frac{\$75.44}{\text{SL Points} \times 1.0}, 2\right)$ (Min $\text{SL} \ge \$500.00$)
   - *Ethereum (ETHUSD)*: $\text{Lots} = \text{round}\left(\frac{\$75.44}{\text{SL Points} \times 1.0}, 2\right)$ (Min $\text{SL} \ge \$20.00$)
 - **Target 1 Objective**: **1.25R – 1.50R** (+$94.30 to +$113.16 Realized)
+- **Concurrent Position Execution**: **Uncapped** (`max_open_positions = 0` / no artificial cap), paced by 1-trade-per-bar lock. Allows risk-free trailing runners to compound freely during multi-day trends.
 - **Compounding Status**: **Completely Removed** (Zero ladder state files required in production).
 
 ### 2.1 Production Strategy: High-Velocity Touch (`FLAT_RISK_TOUCH`)

@@ -117,7 +117,8 @@ class SocketBroker(BaseBroker):
         })
         
         if resp.get("status") != "SUCCESS" or "positions" not in resp:
-            return []
+            err = resp.get("message", "Bridge communication failed or invalid response")
+            raise ConnectionError(f"Failed to fetch open positions from MT5 Bridge: {err}")
 
         raw_list = resp.get("positions", [])
         positions: List[Position] = []

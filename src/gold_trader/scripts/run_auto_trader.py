@@ -46,7 +46,7 @@ def main():
     parser.add_argument("--trend-filter-ema", type=int, default=50, help="Trend filter EMA period (50 or 200, default: 50)")
     parser.add_argument("--trigger-mode", default="TOUCH", choices=["TOUCH", "CLOSE"], help="Trigger mode: TOUCH or CLOSE (default: TOUCH)")
     parser.add_argument("--min-quality", type=int, default=80, help="Minimum setup quality score (0-100)")
-    parser.add_argument("--max-positions", type=int, default=2, help="Max open positions limit")
+    parser.add_argument("--max-positions", type=int, default=0, help="Max open positions limit (0 for uncapped, default: 0)")
     parser.add_argument("--dry-run", action="store_true", help="Analyze and evaluate without placing real orders")
     parser.add_argument("--once", action="store_true", help="Run a single evaluation cycle and exit")
     parser.add_argument("--loop", action="store_true", help="Run continuously in a 24/7 monitoring loop")
@@ -61,6 +61,7 @@ def main():
     parser.add_argument("--scale-out-r", type=float, default=1.00, help="Target 1 R-multiple for partial scale out (default: 1.00)")
     parser.add_argument("--enable-runner-trailing", action=argparse.BooleanOptionalAction, default=True, help="Enable dynamic runner trailing after Target 1")
     parser.add_argument("--runner-trail-buffer", type=float, default=4.50, help="Runner trailing buffer in USD (default: 4.50 for Gold, 350.00 for BTC)")
+    parser.add_argument("--runner-trail-buffer-r", type=float, default=0.50, help="Runner trailing stop buffer in R-multiples (default: 0.50R)")
     parser.add_argument("--runner-target-2-multiplier", type=float, default=3.00, help="Target 2 extension multiplier (default: 3.00)")
     parser.add_argument("--enable-news-catalyst-guard", action=argparse.BooleanOptionalAction, default=True, help="Pause trades ±15m around high-impact US macro events (CPI, NFP, FOMC)")
     parser.add_argument("--news-guard-buffer-minutes", type=int, default=15, help="Minutes blackout buffer before/after high-impact news (default: 15)")
@@ -103,6 +104,7 @@ def main():
         partial_scale_out_pct=args.partial_scale_out_pct,
         scale_out_r=args.scale_out_r,
         enable_runner_trailing=args.enable_runner_trailing,
+        runner_trail_buffer_r=args.runner_trail_buffer_r,
         runner_trail_buffer_usd=(
             350.00 if "BTC" in args.symbol.upper() and args.runner_trail_buffer == 4.50
             else (10.00 if "ETH" in args.symbol.upper() and args.runner_trail_buffer == 4.50 else args.runner_trail_buffer)
@@ -131,7 +133,7 @@ def main():
     logger.info(f"   ML Meta-Labeling Filter: {cfg.enable_ml_filter} (Min Win Prob: {cfg.ml_min_probability:.1%}, Dynamic Sizing: {cfg.ml_dynamic_sizing})")
     logger.info(f"   Auto Execute: {cfg.auto_execute} | Max Open: {cfg.max_open_positions}")
     logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
-    logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (Buffer: ${cfg.runner_trail_buffer_usd:.2f} | T2: {cfg.runner_target_2_multiplier:.2f}R)")
+    logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (0.5R Dynamic Buffer: {cfg.runner_trail_buffer_r:.2f}R [~${cfg.runner_trail_buffer_usd:.2f}] | T2: {cfg.runner_target_2_multiplier:.2f}R)")
     logger.info(f"   Polling Cycle: Adaptive Dual-Speed ({cfg.enable_adaptive_dual_speed}) | Idle: {cfg.scan_interval_seconds}s | In-Trade: {cfg.active_interval_seconds}s")
     logger.info(f"🎯 Execution Sizing: FLAT RISK (Compounding Strategy Removed)")
     logger.info(f"   Capital Baseline: $1,000.00 | Fixed Risk: ${cfg.fixed_risk_usd:.2f} per trade")

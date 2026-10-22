@@ -348,6 +348,66 @@ class TestGoldAutoTrader(unittest.TestCase):
         self.assertEqual(res["open_positions_count"], 1)
         self.assertIn("decision", res)
 
+    @patch("gold_trader.core.auto_trader.generate_gold_trade_setup")
+    def test_market_order_places_tp2_for_runner(self, mock_setup):
+        self.trader.config.enable_runner_trailing = True
+        self.trader.config.runner_target_2_multiplier = 3.0
+        self.trader.config.min_risk_reward = 1.25
+        mock_setup.return_value = {
+            "symbol": "XAUUSD",
+            "action": "BUY",
+            "bias": "BULLISH",
+            "setup_name": "Test Runner TP Setup",
+            "entry_price": 4350.0,
+            "quality_score": 90,
+            "risk_reward_t1": 1.25,
+            "suggested_lot_size": 0.05,
+            "stop_loss": 4340.0,  # 10 pt SL dist
+            "target_1": 4362.5,   # 1.25R
+            "target_2": 4380.0,   # 3.0R
+        }
+        res = self.trader.evaluate_and_trade()
+        self.assertEqual(res["action"], "BUY")
+        self.assertEqual(len(self.broker.orders), 1)
+        # Broker order TP must match Target 2 (3.0R) so the runner is not liquidated at 1.25R
+        placed_order = self.broker.orders[0]
+        # With broker quote ask=4350.35, sl=4340.35, 3.0R TP = 4350.35 + 30.0 = 4380.35
+        self.assertGreater(placed_order["tp"], 4370.0)
+        self.assertEqual(placed_order["tp"], 4380.35)
+
+    def test_modify_position_executed_immediately_on_target_1(self):
+        call_sequence = []
+        original_modify = self.broker.modify_position
+        def tracked_modify(*args, **kwargs):
+            call_sequence.append("broker_modify")
+            return original_modify(*args, **kwargs)
+        self.broker.modify_position = tracked_modify
+
+        def tracked_telegram(*args, **kwargs):
+            call_sequence.append("telegram_notify")
+        self.mock_notifier.send_trade_update = tracked_telegram
+        self.trader.config.send_telegram_alerts = True
+
+        self.broker.open_pos = [{
+            "ticket": "POS-501",
+            "symbol": "XAUUSD",
+            "side": "BUY",
+            "lots": 0.04,
+            "open_price": 4150.0,
+            "current_price": 4165.0,  # +15 pts (>= 1.0R of 10 pts)
+            "sl": 4140.0,
+            "tp": 4180.0,
+            "pnl": 60.0,
+        }]
+
+        actions = self.trader._manage_open_positions(self.broker.open_pos)
+        self.assertIn("broker_modify", call_sequence)
+        self.assertIn("telegram_notify", call_sequence)
+        # Verify broker modification occurred BEFORE telegram notification
+        first_modify_idx = call_sequence.index("broker_modify")
+        first_tg_idx = call_sequence.index("telegram_notify")
+        self.assertLess(first_modify_idx, first_tg_idx, "Broker modification MUST execute before Telegram notification to prevent lag!")
+
 
 if __name__ == "__main__":
     unittest.main()

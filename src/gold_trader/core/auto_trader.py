@@ -50,7 +50,7 @@ class AutoTraderConfig:
     risk_pct_per_trade: float = 1.0
     min_risk_reward: float = 1.25
     min_quality_score: int = 80
-    max_open_positions: int = 2
+    max_open_positions: Optional[int] = 0  # 0 or None = uncapped (no artificial exposure ceiling)
     max_spread_pips: float = 4.0
     scan_interval_seconds: int = 60
     active_interval_seconds: int = 5
@@ -74,6 +74,7 @@ class AutoTraderConfig:
     scale_out_r: float = 1.00
     enable_runner_trailing: bool = True
     runner_trail_buffer_usd: float = 4.50
+    runner_trail_buffer_r: Optional[float] = 0.50  # Dynamic 0.5R trailing stop buffer
     runner_target_2_multiplier: float = 3.00
     enable_news_catalyst_guard: bool = True
     news_guard_buffer_minutes: int = 15
@@ -211,8 +212,17 @@ class GoldAutoTrader:
 
         try:
             open_positions = self.broker.get_open_positions()
-        except Exception:
-            open_positions = []
+        except Exception as e:
+            logger.debug("Failed to fetch open positions in fast cycle: %s", e)
+            open_positions = None
+
+        if open_positions is None:
+            return {
+                "status": "FAST_MANAGE_SKIPPED",
+                "timestamp": now,
+                "symbol": symbol,
+                "reason": "Broker unavailable",
+            }
 
         sym_open_positions = [p for p in open_positions if self._is_matching_symbol(str(p.get("symbol", "")), symbol)]
 
@@ -390,18 +400,21 @@ class GoldAutoTrader:
         try:
             open_positions = self.broker.get_open_positions()
         except Exception as e:
-            open_positions = []
+            logger.warning("Could not fetch open positions from broker: %s", e)
+            open_positions = None
 
         try:
             pending_orders = self.broker.get_pending_orders()
         except Exception as e:
             pending_orders = []
 
-        # 2. Check for Closed Positions (Exit Alert Detection)
-        self._detect_and_notify_exits(open_positions, current_balance=balance)
-
-        # 3. Manage existing open positions (Trailing SL / Breakeven)
-        managed_actions = self._manage_open_positions(open_positions)
+        # 2. Check for Closed Positions (Exit Alert Detection) only if positions fetched successfully
+        if open_positions is not None:
+            self._detect_and_notify_exits(open_positions, current_balance=balance)
+            # 3. Manage existing open positions (Trailing SL / Breakeven)
+            managed_actions = self._manage_open_positions(open_positions)
+        else:
+            managed_actions = []
 
         # 4. Generate Trade Setup based on mode
         is_touch = self.config.mode in ("FLAT_RISK_TOUCH", "COMPOUNDING_TOUCH", "HIGH_VELOCITY_TOUCH")
@@ -536,13 +549,14 @@ class GoldAutoTrader:
         sym_pending_orders = [po for po in pending_orders if self._is_matching_symbol(str(po.get("symbol", "")), symbol)]
 
         active_exposure = len(sym_open_positions) + len(sym_pending_orders)
-        if active_exposure >= self.config.max_open_positions:
-            rejection_reasons.append(f"Max active exposure reached ({len(sym_open_positions)} open, {len(sym_pending_orders)} pending >= {self.config.max_open_positions}).")
+        if self.config.max_open_positions and self.config.max_open_positions > 0:
+            if active_exposure >= self.config.max_open_positions:
+                rejection_reasons.append(f"Max active exposure reached ({len(sym_open_positions)} open, {len(sym_pending_orders)} pending >= {self.config.max_open_positions}).")
 
-        # Check if we already have an open position in the same direction
-        same_direction = [p for p in sym_open_positions if p.get("side") == action]
-        if same_direction:
-            rejection_reasons.append(f"Position already open in direction {action} (Ticket #{same_direction[0].get('ticket')}).")
+            # Check if we already have an open position in the same direction
+            same_direction = [p for p in sym_open_positions if p.get("side") == action]
+            if same_direction:
+                rejection_reasons.append(f"Position already open in direction {action} (Ticket #{same_direction[0].get('ticket')}).")
 
         # Check Bar Lock (Max 1 trade per candle bar)
         if self.config.one_trade_per_bar and candle_time:
@@ -669,14 +683,16 @@ class GoldAutoTrader:
                                     default_tp_d = 625.0 if is_btc else (25.0 if is_eth else 2.00)
                                     sl_dist = abs(price - sl) if sl else default_sl_d
                                     tp_dist = abs(tp1 - price) if tp1 else default_tp_d
+                                    tp2_dist = abs(tp2 - price) if tp2 else round(self.config.runner_target_2_multiplier * sl_dist, 2)
                                     price = broker_entry
                                     if action == "BUY":
                                         sl = round(broker_entry - sl_dist, 2)
                                         tp1 = round(broker_entry + tp_dist, 2)
+                                        tp2 = round(broker_entry + tp2_dist, 2) if self.config.enable_runner_trailing else tp1
                                     else:
                                         sl = round(broker_entry + sl_dist, 2)
                                         tp1 = round(broker_entry - tp_dist, 2)
-                                    tp2 = tp1
+                                        tp2 = round(broker_entry - tp2_dist, 2) if self.config.enable_runner_trailing else tp1
                         except Exception as cal_err:
                             logger.debug("Broker price calibration: %s", cal_err)
                     else:
@@ -686,6 +702,12 @@ class GoldAutoTrader:
                             sl = round(float(sl), 2)
                         if tp1 is not None:
                             tp1 = round(float(tp1), 2)
+                        if tp2 is not None:
+                            tp2 = round(float(tp2), 2)
+                        elif tp1 is not None:
+                            limit_sl_d = abs(price - sl) if sl else (500.0 if "BTC" in symbol.upper() else (20.0 if "ETH" in symbol.upper() else 8.0))
+                            tp2 = round(price + (self.config.runner_target_2_multiplier * limit_sl_d), 2) if action == "BUY" else round(price - (self.config.runner_target_2_multiplier * limit_sl_d), 2)
+                        else:
                             tp2 = tp1
 
                     order_comment = f"AI-FlatRisk-{symbol}"
@@ -774,8 +796,9 @@ class GoldAutoTrader:
         if not is_crypto and now_dt.hour >= 21 and self._get_state("daily_report_date") != today_date_str:
             try:
                 import subprocess
+                import sys
                 subprocess.Popen(
-                    ["/usr/bin/python3", "/home/mcpuser/MCP/gold-trading-system/scripts/send_daily_report.py"],
+                    [sys.executable, "/home/mcpuser/MCP/gold-trading-system/scripts/send_daily_report.py"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -834,12 +857,6 @@ class GoldAutoTrader:
                 contract_size = 1.0 if (is_btc or is_eth) else 100.0
                 default_sl_dist = 500.00 if is_btc else (20.00 if is_eth else 8.00)
                 be_offset = 30.00 if is_btc else (2.00 if is_eth else 0.50)
-                if is_btc:
-                    trail_buffer = self.config.runner_trail_buffer_usd if self.config.runner_trail_buffer_usd > 50.0 else 350.00
-                elif is_eth:
-                    trail_buffer = self.config.runner_trail_buffer_usd if self.config.runner_trail_buffer_usd != 4.50 else 10.00
-                else:
-                    trail_buffer = self.config.runner_trail_buffer_usd
 
                 tracked = self.tracked_positions.get(ticket)
                 if not tracked:
@@ -874,6 +891,16 @@ class GoldAutoTrader:
                 initial_sl = float(tracked.get("stop_loss") or sl or (open_price - default_sl_dist if side == "BUY" else open_price + default_sl_dist))
                 initial_risk_dist = max(abs(open_price - initial_sl), default_sl_dist)
 
+                # Dynamic 0.5R Trailing Stop Buffer calculation
+                if self.config.runner_trail_buffer_r is not None and self.config.runner_trail_buffer_r > 0:
+                    trail_buffer = round(self.config.runner_trail_buffer_r * initial_risk_dist, 2)
+                elif is_btc:
+                    trail_buffer = self.config.runner_trail_buffer_usd if self.config.runner_trail_buffer_usd > 50.0 else 350.00
+                elif is_eth:
+                    trail_buffer = self.config.runner_trail_buffer_usd if self.config.runner_trail_buffer_usd != 4.50 else 10.00
+                else:
+                    trail_buffer = self.config.runner_trail_buffer_usd
+
                 # Target 1 is strictly calibrated to scale_out_r (default 1.0R) for institutional partial exit & BE
                 calc_t1 = round(open_price + (self.config.scale_out_r * initial_risk_dist), 2) if side == "BUY" else round(open_price - (self.config.scale_out_r * initial_risk_dist), 2)
                 calc_t2 = round(open_price + (self.config.runner_target_2_multiplier * initial_risk_dist), 2) if side == "BUY" else round(open_price - (self.config.runner_target_2_multiplier * initial_risk_dist), 2)
@@ -891,23 +918,19 @@ class GoldAutoTrader:
                 hit_tp1 = (current_price >= target_1 or (peak_price >= target_1 and is_above_be)) if side == "BUY" else (current_price <= target_1 or (peak_price <= target_1 and is_above_be))
                 if hit_tp1 and not tp1_taken:
                     scale_out_success = True
+                    scaled_out_lots = 0.0
+                    scaled_out_usd = 0.0
                     if cur_lots >= 0.02 and self.config.enable_partial_scale_out:
                         close_lots = round(cur_lots * self.config.partial_scale_out_pct, 2)
                         close_res = self.broker.close_position(ticket=ticket, lots=close_lots)
                         if close_res.get("status") == "SUCCESS":
-                            realized_usd = round(abs(current_price - open_price) * close_lots * contract_size, 2)
-                            tracked["partial_closed_lots"] = close_lots
-                            tracked["partial_realized_usd"] = realized_usd
-                            msg = f"🏆 Scaled out {close_lots} lots (+$ {realized_usd:.2f}) at Target 1 for Ticket #{ticket}"
+                            scaled_out_lots = close_lots
+                            scaled_out_usd = round(abs(current_price - open_price) * close_lots * contract_size, 2)
+                            tracked["partial_closed_lots"] = scaled_out_lots
+                            tracked["partial_realized_usd"] = scaled_out_usd
+                            msg = f"🏆 Scaled out {close_lots} lots (+$ {scaled_out_usd:.2f}) at Target 1 for Ticket #{ticket}"
                             actions_taken.append(msg)
                             logger.info(msg)
-                            if self.config.send_telegram_alerts:
-                                self.notifier.send_trade_update(
-                                    ticket=ticket,
-                                    symbol=symbol,
-                                    update_type="Target 1 Hit! 50% Scaled Out 💰",
-                                    details=f"Price hit Target 1 (${target_1:.2f}). Scaled out {close_lots} lots. Banked +${realized_usd:.2f} guaranteed cash.",
-                                )
                         else:
                             scale_out_success = False
                             logger.warning("Partial scale-out failed for #%s: %s. Will retry next tick.", ticket, close_res.get("message"))
@@ -915,7 +938,7 @@ class GoldAutoTrader:
                     if scale_out_success:
                         tracked["tp1_taken"] = 1
 
-                        # Shift remaining volume to Break-Even + offset (Risk-Free Runner)
+                        # IMMEDIATELY shift remaining volume to Break-Even + offset (Risk-Free Runner) BEFORE network I/O
                         new_sl = round(open_price + be_offset, 2) if side == "BUY" else round(open_price - be_offset, 2)
                         new_tp = target_2 if (self.config.enable_runner_trailing and target_2) else p.get("tp")
                         res = self.broker.modify_position(ticket=ticket, sl=new_sl, tp=new_tp)
@@ -924,7 +947,20 @@ class GoldAutoTrader:
                             tracked["target_2"] = new_tp
                             msg = f"Trailed SL to Break-Even + ${be_offset:.2f} (${new_sl}) for Ticket #{ticket}"
                             actions_taken.append(msg)
-                            if self.config.send_telegram_alerts:
+                            logger.info(msg)
+                        else:
+                            logger.warning("Failed to modify SL to Break-Even for #%s: %s", ticket, res.get("message"))
+
+                        # Dispatch Telegram alerts AFTER broker order actions have completed
+                        if self.config.send_telegram_alerts:
+                            if scaled_out_lots > 0:
+                                self.notifier.send_trade_update(
+                                    ticket=ticket,
+                                    symbol=symbol,
+                                    update_type="Target 1 Hit! 50% Scaled Out 💰",
+                                    details=f"Price hit Target 1 (${target_1:.2f}). Scaled out {scaled_out_lots} lots. Banked +${scaled_out_usd:.2f} guaranteed cash.",
+                                )
+                            if res.get("status") == "SUCCESS":
                                 self.notifier.send_trade_update(
                                     ticket=ticket,
                                     symbol=symbol,
@@ -937,15 +973,17 @@ class GoldAutoTrader:
                 # -------------------------------------------------------------
                 elif tracked.get("tp1_taken", 0) and self.config.enable_runner_trailing:
                     current_sl_val = float(sl) if sl is not None else (open_price + be_offset if side == "BUY" else open_price - be_offset)
+                    target_2_val = target_2 or tracked.get("target_2") or p.get("tp")
 
                     if side == "BUY":
                         trailed_sl = round(peak_price - trail_buffer, 2)
                         if trailed_sl >= current_sl_val + be_offset and trailed_sl >= open_price + be_offset:
-                            res = self.broker.modify_position(ticket=ticket, sl=trailed_sl, tp=p.get("tp"))
+                            res = self.broker.modify_position(ticket=ticket, sl=trailed_sl, tp=target_2_val)
                             if res.get("status") == "SUCCESS":
                                 tracked["stop_loss"] = trailed_sl
                                 msg = f"Trailed Runner SL to ${trailed_sl} for Ticket #{ticket}"
                                 actions_taken.append(msg)
+                                logger.info(msg)
                                 if self.config.send_telegram_alerts:
                                     self.notifier.send_trade_update(
                                         ticket=ticket,
@@ -953,14 +991,17 @@ class GoldAutoTrader:
                                         update_type="Runner Trailing SL Advanced 🏃",
                                         details=f"Peak reached ${peak_price:.2f}. Trailed Stop-Loss advanced to ${trailed_sl:.2f} (+$ {trailed_sl - open_price:.2f} profit locked).",
                                     )
+                            else:
+                                logger.warning("Runner trailing modification failed for #%s: %s", ticket, res.get("message"))
                     else:  # SELL
                         trailed_sl = round(peak_price + trail_buffer, 2)
                         if trailed_sl <= current_sl_val - be_offset and trailed_sl <= open_price - be_offset:
-                            res = self.broker.modify_position(ticket=ticket, sl=trailed_sl, tp=p.get("tp"))
+                            res = self.broker.modify_position(ticket=ticket, sl=trailed_sl, tp=target_2_val)
                             if res.get("status") == "SUCCESS":
                                 tracked["stop_loss"] = trailed_sl
                                 msg = f"Trailed Runner SL to ${trailed_sl} for Ticket #{ticket}"
                                 actions_taken.append(msg)
+                                logger.info(msg)
                                 if self.config.send_telegram_alerts:
                                     self.notifier.send_trade_update(
                                         ticket=ticket,
@@ -968,6 +1009,8 @@ class GoldAutoTrader:
                                         update_type="Runner Trailing SL Advanced 🏃",
                                         details=f"Peak dropped to ${peak_price:.2f}. Trailed Stop-Loss advanced to ${trailed_sl:.2f} (+$ {open_price - trailed_sl:.2f} profit locked).",
                                     )
+                            else:
+                                logger.warning("Runner trailing modification failed for #%s: %s", ticket, res.get("message"))
 
                 # Persist updated tracking state to database
                 with self._db_connection() as conn:
@@ -991,6 +1034,8 @@ class GoldAutoTrader:
         Detect closed positions by comparing active broker positions against tracked positions,
         and send Telegram Exit notifications with detailed PnL.
         """
+        if current_open_positions is None:
+            return
         current_tickets = {str(p.get("ticket")) for p in current_open_positions if self._is_matching_symbol(str(p.get("symbol", "")), self.config.symbol)}
         closed_tickets = [t for t in self.tracked_positions.keys() if t not in current_tickets]
         now_str = datetime.now(timezone.utc).isoformat()

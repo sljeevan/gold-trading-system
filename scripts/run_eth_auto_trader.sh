@@ -4,9 +4,11 @@ export HOME=/home/mcpuser
 export USER=mcpuser
 export PATH=/home/mcpuser/bin:/usr/local/bin:/usr/bin:/bin
 
+PYTHON_BIN=/home/mcpuser/MCP/gold-trading-system/.venv/bin/python
+
 echo "[ETHAutoTrader] Checking MT5 Bridge status on 127.0.0.1:8888..."
 for i in {1..30}; do
-    if /usr/bin/python3 -c "import socket; s = socket.socket(); s.settimeout(1.0); s.connect(('127.0.0.1', 8888)); s.close()" 2>/dev/null; then
+    if $PYTHON_BIN -c "import socket; s = socket.socket(); s.settimeout(1.0); s.connect(('127.0.0.1', 8888)); s.close()" 2>/dev/null; then
         echo "[ETHAutoTrader] MT5 Bridge is online and accepting connections!"
         break
     fi
@@ -14,7 +16,7 @@ for i in {1..30}; do
     sleep 1
 done
 
-exec /usr/bin/python3 -u -m gold_trader.scripts.run_auto_trader \
+exec $PYTHON_BIN -u -m gold_trader.scripts.run_auto_trader \
     --symbol ETHUSD \
     --mode FLAT_RISK_TOUCH \
     --flat-risk \
@@ -28,6 +30,8 @@ exec /usr/bin/python3 -u -m gold_trader.scripts.run_auto_trader \
     --max-daily-trades 6 \
     --session-filter \
     --runner-trail-buffer 10.00 \
+    --runner-trail-buffer-r 0.50 \
+    --max-positions 0 \
     --runner-target-2-multiplier 3.00 \
     --enable-ml-filter \
     --ml-min-prob 0.44 \
