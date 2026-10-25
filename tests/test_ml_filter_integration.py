@@ -54,16 +54,24 @@ class TestMLFilterIntegration(unittest.TestCase):
 
     @patch("gold_trader.core.ml_filter.fetch_gold_candles")
     def test_predictor_train_and_predict(self, mock_fetch):
+        import tempfile
+        import os
         mock_fetch.return_value = self.mock_candles * 2  # 500 candles
-        pred = GoldMLPredictor(symbol="XAUUSD")
-        train_res = pred.train_model(period="3mo", interval="1h", min_sl_pts=4.0)
-        self.assertEqual(train_res["status"], "SUCCESS")
+        with tempfile.NamedTemporaryFile(suffix=".joblib", delete=False) as tf:
+            temp_model_path = tf.name
+        try:
+            pred = GoldMLPredictor(model_path=temp_model_path, symbol="XAUUSD")
+            train_res = pred.train_model(period="3mo", interval="1h", min_sl_pts=4.0)
+            self.assertEqual(train_res["status"], "SUCCESS")
 
-        eval_res = pred.predict_trade_probability(self.mock_candles, direction="BUY", min_probability_threshold=0.52)
-        self.assertIn("probability_win", eval_res)
-        self.assertIn("is_high_conviction", eval_res)
-        self.assertIn("recommended_lot_multiplier", eval_res)
-        self.assertTrue(0.0 <= eval_res["probability_win"] <= 1.0)
+            eval_res = pred.predict_trade_probability(self.mock_candles, direction="BUY", min_probability_threshold=0.52)
+            self.assertIn("probability_win", eval_res)
+            self.assertIn("is_high_conviction", eval_res)
+            self.assertIn("recommended_lot_multiplier", eval_res)
+            self.assertTrue(0.0 <= eval_res["probability_win"] <= 1.0)
+        finally:
+            if os.path.exists(temp_model_path):
+                os.remove(temp_model_path)
 
     @patch("gold_trader.core.auto_trader.fetch_gold_candles")
     @patch("gold_trader.core.ml_filter.GoldMLPredictor.predict_trade_probability")
@@ -73,14 +81,14 @@ class TestMLFilterIntegration(unittest.TestCase):
         mock_setup.return_value = {
             "status": "APPROVED",
             "action": "BUY",
-            "symbol": "XAUUSD",
+            "symbol": "BTCUSD",
             "level": 1,
             "order_type": "MARKET",
-            "market_price": 2650.0,
-            "entry_price": 2650.0,
+            "market_price": 65000.0,
+            "entry_price": 65000.0,
             "lots": 0.02,
-            "take_profit": 2665.0,
-            "stop_loss": 2638.0,
+            "take_profit": 66000.0,
+            "stop_loss": 64000.0,
             "expected_profit_usd": 30.0,
             "expected_loss_usd": 24.0,
             "reward_risk_ratio": 1.25,
@@ -93,7 +101,7 @@ class TestMLFilterIntegration(unittest.TestCase):
         mock_broker.get_account_info.return_value = {"balance": 1000.0, "equity": 1000.0, "free_margin": 1000.0}
         mock_broker.get_open_positions.return_value = []
         mock_broker.get_pending_orders.return_value = []
-        mock_broker.get_symbol_info.return_value = {"status": "SUCCESS", "bid": 2650.0, "ask": 2650.3}
+        mock_broker.get_symbol_info.return_value = {"status": "SUCCESS", "bid": 65000.0, "ask": 65005.0}
 
         # Case 1: Low probability trade (< threshold) -> Should be rejected by ML Gate
         mock_ml.return_value = {
@@ -105,7 +113,7 @@ class TestMLFilterIntegration(unittest.TestCase):
         }
 
         cfg_ml = AutoTraderConfig(
-            symbol="XAUUSD",
+            symbol="BTCUSD",
             mode="COMPOUNDING_TOUCH",
             enable_ml_filter=True,
             ml_min_probability=0.52,
@@ -114,6 +122,7 @@ class TestMLFilterIntegration(unittest.TestCase):
             db_path=":memory:",
         )
         trader = GoldAutoTrader(broker=mock_broker, config_override=cfg_ml)
+        trader.is_market_open = MagicMock(return_value=True)
         res_reject = trader.evaluate_and_trade()
         self.assertIn("ML Filter Gate", res_reject["decision"])
 

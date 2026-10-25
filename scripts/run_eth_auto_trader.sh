@@ -28,7 +28,7 @@ exec $PYTHON_BIN -u -m gold_trader.scripts.run_auto_trader \
     --one-trade-per-bar \
     --loss-cooldown-minutes 60 \
     --max-daily-trades 6 \
-    --session-filter \
+    --no-session-filter \
     --runner-trail-buffer 10.00 \
     --runner-trail-buffer-r 0.50 \
     --max-positions 0 \

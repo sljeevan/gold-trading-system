@@ -37,7 +37,7 @@ Use this skill when managing, debugging, analyzing, or operating the 24/7 autono
 | **Break-Even Buffer** | `+$0.50` | `+$30.00` | `+$2.00` | Eliminates broker spread whip-outs on runners |
 | **Runner Trailing Buffer**| `$4.50` | `$350.00` | `$10.00` | Trailing buffer behind peak excursion |
 | **Trading Schedule** | Sun 22:05 – Fri 21:00 UTC | 24/7/365 (No Weekend Filter) | 24/7/365 (Crypto) | Gold closes on weekends; crypto trades 24/7 |
-| **Session Filter** | 07:00 – 19:00 UTC | Disabled (`--no-session-filter`) | Enabled or Disabled | Avoids Asian session chop on Gold |
+| **Session Filter** | 07:00 – 19:00 UTC | Disabled (`--no-session-filter`) | Disabled (`--no-session-filter`) | Avoids Asian session chop on Gold; Crypto trades 24/7 |
 
 ---
 
@@ -127,3 +127,4 @@ for sym in ['XAUUSD', 'BTCUSD', 'ETHUSD']:
    - Filtered/Pass setups: Must log real price, candle time, and explicit ML gate rationale (never default to $0.0).
 5. **Live MT5 Broker Priority**: Always query `broker.get_rates()` first for `XAUUSD`, `BTCUSD`, and `ETHUSD` before falling back to Yahoo Finance.
 6. **High-Impact News Catalyst Guard**: Enforce ±15m execution blackout around US CPI, NFP, and FOMC releases via OpenBB.
+7. **UAT Sandbox for Strategy Experiments & Backtests**: Never modify production settings or run heavy parameter sweeps in `/home/mcpuser/MCP/gold-trading-system`. Always use the isolated UAT environment at `/home/mcpuser/MCP/gold-trading-system-uat` with data stored in `~/.gold_trading_data_uat/`.

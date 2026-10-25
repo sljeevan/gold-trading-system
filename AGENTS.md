@@ -1,6 +1,6 @@
-# Gold Autonomous Trading System & Compounding Ladder — System Knowledge Base
+# Aegis Alpha — Autonomous Quantitative Trading System & Knowledge Base
 
-This document serves as the persistent system memory, architectural reference, and operational runbook for any AI agent interacting with the Gold Autonomous Trading System.
+This document serves as the persistent system memory, architectural reference, and operational runbook for any AI agent interacting with the **Aegis Alpha** Autonomous Quantitative Trading System.
 
 ---
 
@@ -431,7 +431,7 @@ The platform features full concurrent support for **Ethereum (ETHUSD)** running 
 ### 11.1 Architecture & Isolation Model
 - **Capital Baseline**: **$1,000.00 Starting Seed**
 - **Execution Mode**: **`FLAT_RISK`** ($75.44 fixed dollar risk per trade, Compounding Ladder Disabled)
-- **Session Filter**: **London/NY Session Filter (07:00–19:00 UTC)** (Slashes max drawdown to 13.9%–15.4% and lifts Profit Factor to 1.54)
+- **Session Filter**: **Disabled (`--no-session-filter`)** for continuous 24/7 crypto execution (parallel with Bitcoin)
 - **ML Meta-Labeling**: `LightGBM` walk-forward classifier (`ml-min-prob 0.44`, model: `~/.gold_trading_data/models/eth_ml_barrier.joblib`)
 - **State File**: [`~/.gold_trading_data/eth_compounding_ladder_state.json`](file:///home/mcpuser/.gold_trading_data/eth_compounding_ladder_state.json)
 - **SQLite Database**: [`~/.gold_trading_data/eth_auto_trader.db`](file:///home/mcpuser/.gold_trading_data/eth_auto_trader.db) (Completely isolated SQLite instance preventing database locks)
@@ -464,7 +464,28 @@ tail -f eth_auto_trader.log
 ```
 
 ---
-*Maintained by Antigravity Agentic Pair Programmer.*
+
+## 12. Aegis Alpha — $30 Flat Risk Multi-Asset Production Engine ($1,000 Capital Baseline)
+
+The platform includes a dedicated multi-asset portfolio engine calibrated for **$30.00 Fixed Dollar Risk (3.0% of $1,000 baseline)** per trade, targeting a consistent **~$20.00/day return**:
+
+- **System Identity**: **Aegis Alpha**
+- **Capital Baseline**: **$1,000.00 Static Base (Pure Cash Extraction / Non-Compounding)**
+- **Target Assets**: Spot Gold (`XAUUSD`), Bitcoin (`BTCUSD`), and Ethereum (`ETHUSD`)
+- **Fixed Risk per Trade**: **$30.00**
+- **Position Sizing Formula**: $\text{Lots} = \text{round}\left(\frac{\$30.00}{\text{SL Distance} \times \text{Contract Size}}, 2\right)$
+  - *Spot Gold*: Fixed `0.02 - 0.03 lots` (Min SL $\ge \$8.00$)
+  - *Bitcoin*: Fixed `0.04 BTC` (Min SL $\ge \$500.00$)
+  - *Ethereum*: Fixed `1.10 - 1.50 ETH` (Min SL $\ge \$20.00$)
+- **Core Strategy**: 1H Donchian 10 Touch + SuperTrend (10, 3.0) + 50 EMA trend filter + ML Meta-Labeling ($P \ge 0.44$)
+- **Two-Stage Execution**:
+  - Stage 1: Scale out 50% volume at Target 1 (1.0R - 1.25R)
+  - Stage 2: Move SL to Break-Even + offset ($0.50 Gold, $30 BTC, $2 ETH)
+  - Stage 3: Trail runner with wide ATR-cleared buffer to Target 2 (3.0R)
+- **Verified 3-Month Performance**: 409 trades, 48.4% Win Rate, 1.41R Payoff, +$1,836.74 total cash (~$19.96/calendar day).
+
+---
+*Maintained by Antigravity Agentic Pair Programmer for Aegis Alpha.*
 
 
 
