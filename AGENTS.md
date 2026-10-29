@@ -63,9 +63,13 @@ The trading engine executes strictly under **Flat Dollar Risk Allocation** on a 
 - **Compounding Status**: **Completely Removed** (Zero ladder state files required in production).
 
 ### 2.1 Production Strategy: High-Velocity Touch (`FLAT_RISK_TOUCH`)
-1. **Strategy Engine**:
+1. **Strategy Engine & Price Action Safeguards**:
    - 1H Donchian 10 Touch + SuperTrend (10, 3.0) + 50 EMA trend filter.
-   - Intrabar price penetration/touch of previous 10-bar Donchian band (immediate wholesale liquidity grab without waiting for 1H bar close).
+   - Intrabar price penetration of previous 10-bar Donchian band with wholesale limit pricing.
+   - **Rejection Wick & Candle Confirmation**: Enforces `upper_wick <= 1.8 * max(body, 0.15 * ATR)` and `c >= o` for BUYs (and `lower_wick <= 1.8 * max(body, 0.15 * ATR)` and `c <= o` for SELLs). Eliminates false breakout entries at opposing pin-bars.
+   - **50 EMA Slope Alignment Guard**: Rejects BUY orders when 50 EMA slope is negative; rejects SELL orders when 50 EMA slope is positive.
+   - **Regime-Aware ADX Guard**: Suppresses breakout entries on Ethereum when 1H ADX(14) < 22.0, completely avoiding horizontal chop bleed.
+   - **Elevated ML Gatekeeper Threshold**: `--ml-min-prob 0.50` across all daemons to enforce institutional conviction.
 2. **Dynamic Volatility Stops**:
    - Gold: $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$8.00)$
    - Bitcoin: $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$500.00)$
@@ -483,6 +487,59 @@ The platform includes a dedicated multi-asset portfolio engine calibrated for **
   - Stage 2: Move SL to Break-Even + offset ($0.50 Gold, $30 BTC, $2 ETH)
   - Stage 3: Trail runner with wide ATR-cleared buffer to Target 2 (3.0R)
 - **Verified 3-Month Performance**: 409 trades, 48.4% Win Rate, 1.41R Payoff, +$1,836.74 total cash (~$19.96/calendar day).
+
+---
+
+## 13. Model 2: Profile A Autonomous Crypto Yield Engine ($1,500 Anchor / Monthly Harvesting)
+
+A completely isolated second production engine operating concurrently alongside Model 1 (Production Baseline) on XM MT5, calibrated specifically for Bitcoin (`BTCUSD`) and Ethereum (`ETHUSD`) with **Monthly Yield Harvesting & Capital Re-Injection**:
+
+### 13.1 Architecture & Isolation Model
+- **Capital Baseline Anchor**: **$1,500.00** ($750 BTC + $750 ETH)
+- **Fixed Risk per Trade**: **$75.00**
+- **Order Isolation Tag**: **`YieldA`** (Tags all orders and pending limits with `YieldA-{symbol}`; prevents position collision with Model 1)
+- **Trailing Stop Loss (Tight)**:
+  - Bitcoin: **`$200.00`** buffer behind peak excursion
+  - Ethereum: **`$6.00`** buffer behind peak excursion
+- **Machine Learning Conviction Gate**: **$P \ge 0.48$** (`LightGBM` Meta-Labeler)
+- **Concurrency Mode**: **`Max 1 Position per Asset`** (`--max-positions 1`)
+- **Dedicated Persistence**:
+  - Bitcoin DB: `~/.gold_trading_data/yield_a_btc_auto_trader.db`
+  - Ethereum DB: `~/.gold_trading_data/yield_a_eth_auto_trader.db`
+  - Logs: `yield_a_btc_auto_trader.log` & `yield_a_eth_auto_trader.log`
+- **Dedicated Systemd Services**:
+  - `yield-a-btc-auto-trader.service`
+  - `yield-a-eth-auto-trader.service`
+
+### 13.2 5-Year Empirical Performance (Oct 2021 – Oct 2026)
+- **Trades**: 5,560 trades
+- **Win Rate**: **54.7%**
+- **Profit Factor**: **1.42**
+- **Net Realized P&L**: **+$81,153.54**
+- **Peak Drawdown**: **$1,361.87** (29.7% of $1,500 anchor)
+- **Monthly Cashflow**:
+  - 54 of 60 months (90.0%) profitable payouts
+  - Only 6 top-up months (avg deficit: ~$159)
+  - Average net monthly cash harvest: **+$1,352.56 / month**
+
+### 13.3 Operational Runbook & Fast CLI Commands
+```bash
+# 1. Check Multi-Model Fleet Status (Model 1 & Model 2)
+bash scripts/status_all_engines.sh
+
+# 2. Start Model 2 (Profile A Crypto Yield Services)
+bash scripts/start_yield_a_engines.sh
+
+# 3. Stop Model 2 (Profile A Crypto Yield Services)
+bash scripts/stop_yield_a_engines.sh
+
+# 4. Check Current Month Harvest & Cashflow Status
+python3 scripts/monitor_yield_a_cashflow.py
+
+# 5. Tail Live Logs for Model 2
+tail -f yield_a_btc_auto_trader.log
+tail -f yield_a_eth_auto_trader.log
+```
 
 ---
 *Maintained by Antigravity Agentic Pair Programmer for Aegis Alpha.*

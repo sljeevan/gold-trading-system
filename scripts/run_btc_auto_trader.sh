@@ -34,6 +34,7 @@ exec $PYTHON_BIN -u -m gold_trader.scripts.run_auto_trader \
     --max-positions 0 \
     --runner-target-2-multiplier 3.00 \
     --enable-ml-filter \
-    --ml-min-prob 0.44 \
+    --ml-min-prob 0.50 \
+    --require-slope-alignment \
     --db-path /home/mcpuser/.gold_trading_data/btc_auto_trader.db \
     --loop 2>&1 | tee -a /home/mcpuser/MCP/gold-trading-system/btc_auto_trader.log

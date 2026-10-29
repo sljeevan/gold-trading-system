@@ -120,6 +120,7 @@ class TestMLFilterIntegration(unittest.TestCase):
             session_filter=False,
             auto_execute=False,
             db_path=":memory:",
+            enable_news_catalyst_guard=False,
         )
         trader = GoldAutoTrader(broker=mock_broker, config_override=cfg_ml)
         trader.is_market_open = MagicMock(return_value=True)

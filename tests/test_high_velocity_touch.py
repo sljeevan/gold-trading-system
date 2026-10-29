@@ -222,6 +222,7 @@ class TestHighVelocityTouchStrategy(unittest.TestCase):
             trigger_mode="TOUCH",
             send_telegram_alerts=False,
             session_filter=False,
+            enable_news_catalyst_guard=False,
         )
         mock_notifier = MagicMock()
         trader = GoldAutoTrader(

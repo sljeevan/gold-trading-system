@@ -1,12 +1,17 @@
 """
 FastAPI Backend & Standalone UI Server for Atlas Multi-Asset Trading Dashboard.
+Supports Dual Production Models:
+- Model 1: Production Baseline (Gold $75.44, BTC $75.44, ETH $75.44 | Wide Trailing | Uncapped Concurrency)
+- Model 2: Profile A Crypto Yield Engine (BTC $75.00, ETH $75.00 | Tight Trailing | Max 1 Pos | $1,500 Treasury Harvest)
 Provides:
-- Web UI at "/" matching exact Atlas Trade design (Tailwind + Plotly.js + Auto-refresh)
+- Web UI at "/" matching exact Atlas Trade design (Tailwind + Plotly.js + Multi-Model switcher)
 - REST API at "/api/dashboard/overview"
+- REST API at "/api/dashboard/treasury"
 - Health at "/api/health"
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -24,7 +29,7 @@ from gold_trader.brokers.socket_broker import SocketBroker
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("DashboardAPI")
 
-app = FastAPI(title="Aegis Alpha Quantitative Trading System", version="1.0.0")
+app = FastAPI(title="Aegis Alpha Quantitative Trading System", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,10 +40,107 @@ app.add_middleware(
 )
 
 DATA_DIR = os.path.expanduser("~/.gold_trading_data")
-DB_MAP = {
-    "XAUUSD": os.path.join(DATA_DIR, "auto_trader.db"),
-    "BTCUSD": os.path.join(DATA_DIR, "btc_auto_trader.db"),
-    "ETHUSD": os.path.join(DATA_DIR, "eth_auto_trader.db"),
+
+MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
+    "model_1": {
+        "id": "model_1",
+        "name": "Model 1: Production Baseline",
+        "short_name": "M1 Baseline",
+        "badge_color": "sky",
+        "bridge_port": 8888,
+        "account_id": "168987477",
+        "server": "XMGlobal-MT5 2",
+        "account_label": "Model 1 Baseline (XMGlobal-MT5 2)",
+        "order_tag": "Standard",
+        "risk_per_trade": "$75.44 Fixed",
+        "tp_policy": "1.25R (+50% Cash) · 3.0R TP2 Runner",
+        "trailing_buffer": "$4.50 Gold / $350 BTC / $10 ETH",
+        "concurrency": "Uncapped (1 Trade/Bar)",
+        "dbs": {
+            "XAUUSD": os.path.join(DATA_DIR, "auto_trader.db"),
+            "BTCUSD": os.path.join(DATA_DIR, "btc_auto_trader.db"),
+            "ETHUSD": os.path.join(DATA_DIR, "eth_auto_trader.db"),
+        },
+        "assets": [
+            {
+                "asset": "Gold",
+                "symbol": "XAUUSD",
+                "venue": "XM / MetaTrader 5",
+                "unit": "lots",
+                "price_format": 2,
+                "default_mark": 4031.50,
+                "model_id": "model_1",
+                "model_name": "M1 Baseline",
+                "risk_desc": "$75.44 Risk · Dynamic ATR Stop ($8 min) · $4.50 Trail",
+            },
+            {
+                "asset": "Bitcoin",
+                "symbol": "BTCUSD",
+                "venue": "XM / MetaTrader 5",
+                "unit": "BTC",
+                "price_format": 2,
+                "default_mark": 81850.0,
+                "model_id": "model_1",
+                "model_name": "M1 Baseline",
+                "risk_desc": "$75.44 Risk · Dynamic ATR Stop ($500 min) · $350 Trail",
+            },
+            {
+                "asset": "Ethereum",
+                "symbol": "ETHUSD",
+                "venue": "XM / MetaTrader 5",
+                "unit": "ETH",
+                "price_format": 2,
+                "default_mark": 2404.0,
+                "model_id": "model_1",
+                "model_name": "M1 Baseline",
+                "risk_desc": "$75.44 Risk · Dynamic ATR Stop ($20 min) · $10 Trail",
+            },
+        ],
+    },
+    "model_2": {
+        "id": "model_2",
+        "name": "Model 2: Profile A Crypto Yield Engine",
+        "short_name": "M2 YieldA",
+        "badge_color": "purple",
+        "bridge_port": 8889,
+        "account_id": "346439083",
+        "server": "XMGlobal-MT5 10",
+        "account_label": "Monthly_winsaw (XMGlobal-MT5 10)",
+        "order_tag": "YieldA",
+        "risk_per_trade": "$75.00 Fixed",
+        "tp_policy": "1.25R (+50% Cash) · 3.0R TP2 Runner",
+        "trailing_buffer": "$200 BTC / $6 ETH (Tight)",
+        "concurrency": "Max 1 Position / Asset",
+        "treasury_anchor": "$1,500.00 Monthly Watermark Harvest",
+        "dbs": {
+            "BTCUSD": os.path.join(DATA_DIR, "yield_a_btc_auto_trader.db"),
+            "ETHUSD": os.path.join(DATA_DIR, "yield_a_eth_auto_trader.db"),
+        },
+        "assets": [
+            {
+                "asset": "Bitcoin (YieldA)",
+                "symbol": "BTCUSD",
+                "venue": "XM / MetaTrader 5",
+                "unit": "BTC",
+                "price_format": 2,
+                "default_mark": 81850.0,
+                "model_id": "model_2",
+                "model_name": "M2 YieldA",
+                "risk_desc": "$75.00 Risk · Tight Trail ($200) · ML P≥0.48 · Max 1 Pos",
+            },
+            {
+                "asset": "Ethereum (YieldA)",
+                "symbol": "ETHUSD",
+                "venue": "XM / MetaTrader 5",
+                "unit": "ETH",
+                "price_format": 2,
+                "default_mark": 2404.0,
+                "model_id": "model_2",
+                "model_name": "M2 YieldA",
+                "risk_desc": "$75.00 Risk · Tight Trail ($6) · ML P≥0.48 · Max 1 Pos",
+            },
+        ],
+    },
 }
 
 _CACHE: Dict[str, Any] = {
@@ -52,20 +154,22 @@ _CACHE: Dict[str, Any] = {
     },
 }
 
-_broker_instance: Optional[SocketBroker] = None
+_broker_instances: Dict[int, Optional[SocketBroker]] = {}
 
 
-def get_broker() -> Optional[SocketBroker]:
-    global _broker_instance
-    if _broker_instance is None:
+def get_broker(port: int = 8888) -> Optional[SocketBroker]:
+    global _broker_instances
+    if port not in _broker_instances or _broker_instances[port] is None:
         try:
-            broker = SocketBroker()
-            if broker.connect():
-                _broker_instance = broker
+            b = SocketBroker(port=port)
+            if b.connect():
+                _broker_instances[port] = b
+            else:
+                _broker_instances[port] = None
         except Exception as e:
-            logger.warning(f"MT5 broker bridge connect failed: {e}")
-            _broker_instance = None
-    return _broker_instance
+            logger.warning(f"MT5 broker bridge connect failed on port {port}: {e}")
+            _broker_instances[port] = None
+    return _broker_instances.get(port)
 
 
 def ensure_sqlite_wal(db_path: str):
@@ -80,146 +184,223 @@ def ensure_sqlite_wal(db_path: str):
             pass
 
 
-def fetch_latest_scan_telemetry() -> Dict[str, Any]:
-    telemetry = {}
-    for sym, path in DB_MAP.items():
-        if not os.path.exists(path):
-            continue
-        try:
-            conn = sqlite3.connect(path, timeout=1.0)
-            cur = conn.cursor()
-            row = cur.execute(
-                "SELECT price, bias, decision, details_json, timestamp FROM scan_logs ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            conn.close()
-            if row:
-                p, bias, decision, details_raw, ts = row
-                det = {}
-                if details_raw:
-                    try:
-                        import json
-                        det = json.loads(details_raw).get("setup_details", {})
-                    except Exception:
-                        pass
-                telemetry[sym] = {
-                    "price": round(float(p), 2) if p else None,
-                    "bias": bias or "NEUTRAL",
-                    "decision": decision or "",
-                    "atr": round(float(det.get("atr")), 2) if det.get("atr") else None,
-                    "rsi": round(float(det.get("rsi")), 1) if det.get("rsi") else None,
-                    "supertrend": det.get("supertrend_direction", 0),
-                    "donchian_upper": round(float(det.get("donchian_upper")), 2) if det.get("donchian_upper") else None,
-                    "donchian_lower": round(float(det.get("donchian_lower")), 2) if det.get("donchian_lower") else None,
-                    "donchian_middle": round(float(det.get("donchian_middle")), 2) if det.get("donchian_middle") else None,
-                    "reason": (det.get("reasons") or ["Scanning for 1H Touch"])[0],
-                    "timestamp": ts[:19].replace("T", " ") if ts else "",
-                }
-        except Exception as e:
-            logger.warning(f"Error reading scan_logs for {sym}: {e}")
+def fetch_latest_scan_telemetry() -> Dict[str, Dict[str, Any]]:
+    telemetry: Dict[str, Dict[str, Any]] = {"model_1": {}, "model_2": {}}
+    for m_id, mcfg in MODEL_CONFIGS.items():
+        for sym, path in mcfg["dbs"].items():
+            if not os.path.exists(path):
+                continue
+            try:
+                conn = sqlite3.connect(path, timeout=1.0)
+                cur = conn.cursor()
+                row = cur.execute(
+                    "SELECT price, bias, decision, details_json, timestamp FROM scan_logs ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                conn.close()
+                if row:
+                    p, bias, decision, details_raw, ts = row
+                    det = {}
+                    if details_raw:
+                        try:
+                            det = json.loads(details_raw).get("setup_details", {})
+                        except Exception:
+                            pass
+                    telemetry[m_id][sym] = {
+                        "price": round(float(p), 2) if p else None,
+                        "bias": bias or "NEUTRAL",
+                        "decision": decision or "",
+                        "atr": round(float(det.get("atr")), 2) if det.get("atr") else None,
+                        "rsi": round(float(det.get("rsi")), 1) if det.get("rsi") else None,
+                        "supertrend": det.get("supertrend_direction", 0),
+                        "donchian_upper": round(float(det.get("donchian_upper")), 2) if det.get("donchian_upper") else None,
+                        "donchian_lower": round(float(det.get("donchian_lower")), 2) if det.get("donchian_lower") else None,
+                        "donchian_middle": round(float(det.get("donchian_middle")), 2) if det.get("donchian_middle") else None,
+                        "reason": (det.get("reasons") or ["Scanning for 1H Touch"])[0],
+                        "timestamp": ts[:19].replace("T", " ") if ts else "",
+                    }
+            except Exception as e:
+                logger.warning(f"Error reading scan_logs for {m_id} {sym}: {e}")
     return telemetry
 
 
 def fetch_historic_and_pnl_data() -> Dict[str, Any]:
-    monthly_pnl = defaultdict(float)
-    daily_pnl = defaultdict(float)
+    monthly_pnl_all = defaultdict(float)
+    monthly_pnl_by_model = {"model_1": defaultdict(float), "model_2": defaultdict(float)}
+
+    daily_pnl_all = defaultdict(float)
+    daily_pnl_by_model = {"model_1": defaultdict(float), "model_2": defaultdict(float)}
+
     today_realized_by_sym = defaultdict(float)
+    today_realized_by_model_sym = defaultdict(float)
     all_trades: List[Dict[str, Any]] = []
 
-    for sym, path in DB_MAP.items():
-        if not os.path.exists(path):
-            continue
-        try:
-            ensure_sqlite_wal(path)
-            conn = sqlite3.connect(path, timeout=2.0)
-            cur = conn.cursor()
-            rows = cur.execute(
-                """
-                SELECT timestamp, ticket, symbol, action, lots, status, entry_price, close_price, pnl, comment, close_time, stop_loss, target_1, target_2, rr_ratio
-                FROM trade_executions
-                ORDER BY id ASC
-                """
-            ).fetchall()
-            conn.close()
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-            today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    for m_id, mcfg in MODEL_CONFIGS.items():
+        for sym, path in mcfg["dbs"].items():
+            if not os.path.exists(path):
+                continue
+            try:
+                ensure_sqlite_wal(path)
+                conn = sqlite3.connect(path, timeout=2.0)
+                cur = conn.cursor()
+                rows = cur.execute(
+                    """
+                    SELECT timestamp, ticket, symbol, action, lots, status, entry_price, close_price, pnl, comment, close_time, stop_loss, target_1, target_2, rr_ratio
+                    FROM trade_executions
+                    ORDER BY id ASC
+                    """
+                ).fetchall()
+                conn.close()
 
-            for r in rows:
-                ts, ticket, symbol, action, lots, status, entry, exit_p, pnl_val, comment, close_t, sl_val, tp1_val, tp2_val, rr_val = r
-                pnl = float(pnl_val or 0.0)
-                t_str = close_t or ts
+                for r in rows:
+                    ts, ticket, symbol, action, lots, status, entry, exit_p, pnl_val, comment, close_t, sl_val, tp1_val, tp2_val, rr_val = r
+                    pnl = float(pnl_val or 0.0)
+                    t_str = close_t or ts
 
-                if t_str and status == "CLOSED":
-                    dt_str = t_str[:10]
-                    m_str = t_str[:7] + "-01"
-                    monthly_pnl[m_str] += pnl
-                    daily_pnl[dt_str] += pnl
+                    if t_str and status == "CLOSED":
+                        dt_str = t_str[:10]
+                        m_str = t_str[:7] + "-01"
+                        monthly_pnl_all[m_str] += pnl
+                        monthly_pnl_by_model[m_id][m_str] += pnl
 
-                    if dt_str == today_utc:
-                        today_realized_by_sym[symbol] += pnl
+                        daily_pnl_all[dt_str] += pnl
+                        daily_pnl_by_model[m_id][dt_str] += pnl
 
-                all_trades.append(
-                    {
-                        "time": ts[:19].replace("T", " ") if ts else "",
-                        "ticket": str(ticket or ""),
-                        "asset": symbol,
-                        "side": action,
-                        "qty": (
-                            f"{lots:.2f} lots"
-                            if "XAU" in symbol
-                            else (f"{lots:.2f} BTC" if "BTC" in symbol else f"{lots:.2f} ETH")
-                        ),
-                        "status": status,
-                        "entry": round(float(entry), 2) if entry else None,
-                        "exit": round(float(exit_p), 2) if exit_p else None,
-                        "sl": round(float(sl_val), 2) if sl_val else None,
-                        "tp": round(float(tp1_val), 2) if tp1_val else None,
-                        "tp2": round(float(tp2_val), 2) if tp2_val else None,
-                        "rr": round(float(rr_val), 2) if rr_val else 1.25,
-                        "pnl": round(pnl, 2),
-                        "strategy": (
-                            "1H Donchian 10 Touch"
-                            if "FlatRisk" in (comment or "")
-                            else (comment or "Trend Strategy")
-                        ),
-                    }
-                )
-        except Exception as exc:
-            logger.warning(f"Error querying {path}: {exc}")
+                        if dt_str == today_utc:
+                            today_realized_by_sym[symbol] += pnl
+                            today_realized_by_model_sym[(m_id, symbol)] += pnl
+
+                    strat_desc = comment or "1H Donchian 10 Touch"
+                    if m_id == "model_2":
+                        strat_desc = f"Profile A Tight TSL ({comment or 'YieldA'})"
+                    elif "FlatRisk" in (comment or ""):
+                        strat_desc = "1H Donchian 10 Touch ($75.44)"
+
+                    all_trades.append(
+                        {
+                            "time": ts[:19].replace("T", " ") if ts else "",
+                            "ticket": str(ticket or ""),
+                            "asset": symbol,
+                            "side": action,
+                            "qty": (
+                                f"{lots:.2f} lots"
+                                if "XAU" in symbol
+                                else (f"{lots:.2f} BTC" if "BTC" in symbol else f"{lots:.2f} ETH")
+                            ),
+                            "status": status,
+                            "entry": round(float(entry), 2) if entry else None,
+                            "exit": round(float(exit_p), 2) if exit_p else None,
+                            "sl": round(float(sl_val), 2) if sl_val else None,
+                            "tp": round(float(tp1_val), 2) if tp1_val else None,
+                            "tp2": round(float(tp2_val), 2) if tp2_val else None,
+                            "rr": round(float(rr_val), 2) if rr_val else 1.25,
+                            "pnl": round(pnl, 2),
+                            "comment": comment or "",
+                            "model_id": m_id,
+                            "model_name": mcfg["short_name"],
+                            "model_full": mcfg["name"],
+                            "strategy": strat_desc,
+                        }
+                    )
+            except Exception as exc:
+                logger.warning(f"Error querying {m_id} {path}: {exc}")
 
     all_trades.sort(key=lambda x: x["time"], reverse=True)
 
-    monthly_list = [
-        {"month": m, "pnl": round(val, 2)} for m, val in sorted(monthly_pnl.items())
-    ]
+    # Format monthly lists
+    monthly_all_list = [{"month": m, "pnl": round(val, 2)} for m, val in sorted(monthly_pnl_all.items())]
+    monthly_m1_list = [{"month": m, "pnl": round(val, 2)} for m, val in sorted(monthly_pnl_by_model["model_1"].items())]
+    monthly_m2_list = [{"month": m, "pnl": round(val, 2)} for m, val in sorted(monthly_pnl_by_model["model_2"].items())]
 
-    cum = 0.0
-    overall_list = []
-    for d, val in sorted(daily_pnl.items()):
-        cum += val
-        overall_list.append({"date": d, "cumulative_pnl": round(cum, 2)})
+    # Format cumulative lists
+    def build_cum_list(d_dict: Dict[str, float]) -> List[Dict[str, Any]]:
+        cum = 0.0
+        out = []
+        for d, val in sorted(d_dict.items()):
+            cum += val
+            out.append({"date": d, "cumulative_pnl": round(cum, 2)})
+        return out
+
+    overall_all_list = build_cum_list(daily_pnl_all)
+    overall_m1_list = build_cum_list(daily_pnl_by_model["model_1"])
+    overall_m2_list = build_cum_list(daily_pnl_by_model["model_2"])
+
+    # Treasury Model 2 Watermark calculations
+    current_month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+    m2_closed_trades = [t for t in all_trades if t["model_id"] == "model_2" and t["status"] == "CLOSED"]
+    m2_month_closed = [t for t in m2_closed_trades if t["time"].startswith(current_month_prefix)]
+    m2_cur_month_pnl = sum(t["pnl"] for t in m2_month_closed)
+    m2_total_realized = sum(t["pnl"] for t in m2_closed_trades)
+
+    anchor = 1500.0
+    cur_equity = round(anchor + m2_cur_month_pnl, 2)
+    surplus = round(max(0.0, m2_cur_month_pnl), 2)
+    deficit = round(abs(min(0.0, m2_cur_month_pnl)), 2)
+
+    status_text = "READY TO HARVEST" if surplus > 0 else ("DEFICIT (Top-up Required)" if deficit > 0 else "BASELINE SECURED ($1,500.00)")
+
+    m2_wins = [t for t in m2_closed_trades if t["pnl"] > 0]
+    win_rate_m2 = round(len(m2_wins) / len(m2_closed_trades) * 100, 1) if m2_closed_trades else 0.0
+
+    treasury_m2 = {
+        "anchor_capital": anchor,
+        "current_month": current_month_prefix,
+        "current_month_pnl": round(m2_cur_month_pnl, 2),
+        "current_month_equity": cur_equity,
+        "harvestable_surplus": surplus,
+        "deficit_top_up_needed": deficit,
+        "status": status_text,
+        "total_trades": len(m2_closed_trades),
+        "win_rate": win_rate_m2,
+        "total_realized": round(m2_total_realized, 2),
+    }
 
     return {
-        "monthly": monthly_list,
-        "overall": overall_list,
+        "monthly_all": monthly_all_list,
+        "monthly_by_model": {
+            "model_1": monthly_m1_list,
+            "model_2": monthly_m2_list,
+        },
+        "overall_all": overall_all_list,
+        "overall_by_model": {
+            "model_1": overall_m1_list,
+            "model_2": overall_m2_list,
+        },
         "trades": all_trades,
         "today_realized_by_sym": today_realized_by_sym,
+        "today_realized_by_model_sym": today_realized_by_model_sym,
+        "treasury_model_2": treasury_m2,
     }
 
 
-def fetch_live_asset_cards(today_realized_map: Dict[str, float]) -> List[Dict[str, Any]]:
-    broker = get_broker()
+def fetch_live_asset_cards(
+    today_realized_by_model_sym: Dict[Any, float],
+    today_realized_by_sym: Dict[str, float],
+) -> Dict[str, Any]:
+    b1 = get_broker(8888)
+    b2 = get_broker(8889)
     now_iso = datetime.now(timezone.utc).isoformat()
     telemetry = fetch_latest_scan_telemetry()
 
-    open_positions: List[Dict[str, Any]] = []
-    if broker:
+    open_positions_m1: List[Dict[str, Any]] = []
+    if b1:
         try:
-            open_positions = broker.get_open_positions()
+            open_positions_m1 = b1.get_open_positions()
         except Exception as e:
-            logger.warning(f"Failed to fetch live open positions: {e}")
+            logger.warning(f"Failed to fetch Bridge 1 live open positions: {e}")
 
-    open_by_symbol = {}
-    for p in open_positions:
+    open_positions_m2: List[Dict[str, Any]] = []
+    if b2:
+        try:
+            open_positions_m2 = b2.get_open_positions()
+        except Exception as e:
+            logger.warning(f"Failed to fetch Bridge 2 live open positions: {e}")
+
+    open_by_model_sym: Dict[tuple, Dict[str, Any]] = {}
+    tagged_positions: List[Dict[str, Any]] = []
+
+    for p in open_positions_m1:
         sym = p.get("symbol", "").upper()
         if "GOLD" in sym or "XAU" in sym:
             sym = "XAUUSD"
@@ -227,112 +408,134 @@ def fetch_live_asset_cards(today_realized_map: Dict[str, float]) -> List[Dict[st
             sym = "BTCUSD"
         elif "ETH" in sym:
             sym = "ETHUSD"
-        open_by_symbol[sym] = p
 
-    assets_config = [
-        {
-            "asset": "Gold",
-            "symbol": "XAUUSD",
-            "venue": "XM / MetaTrader 5",
-            "unit": "lots",
-            "price_format": 2,
-            "default_mark": 4031.50,
-        },
-        {
-            "asset": "Bitcoin",
-            "symbol": "BTCUSD",
-            "venue": "XM / MetaTrader 5",
-            "unit": "BTC",
-            "price_format": 2,
-            "default_mark": 81850.0,
-        },
-        {
-            "asset": "Ethereum",
-            "symbol": "ETHUSD",
-            "venue": "XM / MetaTrader 5",
-            "unit": "ETH",
-            "price_format": 2,
-            "default_mark": 2404.0,
-        },
-    ]
+        p_tagged = dict(p)
+        p_tagged["model_id"] = "model_1"
+        p_tagged["model_name"] = MODEL_CONFIGS["model_1"]["short_name"]
+        p_tagged["symbol_norm"] = sym
+        tagged_positions.append(p_tagged)
+        open_by_model_sym[("model_1", sym)] = p_tagged
 
-    result = []
-    for item in assets_config:
-        sym = item["symbol"]
-        mark_price = item["default_mark"]
+    for p in open_positions_m2:
+        sym = p.get("symbol", "").upper()
+        if "BTC" in sym:
+            sym = "BTCUSD"
+        elif "ETH" in sym:
+            sym = "ETHUSD"
 
-        if broker:
-            try:
-                info = broker.get_symbol_info(sym)
-                if info.get("status") == "SUCCESS":
-                    bid = float(info.get("bid", 0.0))
-                    if bid > 0:
-                        mark_price = bid
-                        _CACHE["ticks"][sym] = bid
-            except Exception:
+        p_tagged = dict(p)
+        p_tagged["model_id"] = "model_2"
+        p_tagged["model_name"] = MODEL_CONFIGS["model_2"]["short_name"]
+        p_tagged["symbol_norm"] = sym
+        tagged_positions.append(p_tagged)
+        open_by_model_sym[("model_2", sym)] = p_tagged
+
+    all_cards: List[Dict[str, Any]] = []
+    cards_by_model: Dict[str, List[Dict[str, Any]]] = {"model_1": [], "model_2": []}
+
+    for m_id, mcfg in MODEL_CONFIGS.items():
+        broker_for_model = b1 if m_id == "model_1" else b2
+        for item in mcfg["assets"]:
+            sym = item["symbol"]
+            mark_price = item["default_mark"]
+
+            if broker_for_model:
+                try:
+                    info = broker_for_model.get_symbol_info(sym)
+                    if info.get("status") == "SUCCESS":
+                        bid = float(info.get("bid", 0.0))
+                        if bid > 0:
+                            mark_price = bid
+                            _CACHE["ticks"][sym] = bid
+                except Exception:
+                    mark_price = _CACHE["ticks"].get(sym, mark_price)
+            else:
                 mark_price = _CACHE["ticks"].get(sym, mark_price)
-        else:
-            mark_price = _CACHE["ticks"].get(sym, mark_price)
 
-        radar_info = telemetry.get(sym, {
-            "price": round(mark_price, 2),
-            "bias": "NEUTRAL",
-            "decision": "",
-            "atr": None,
-            "rsi": None,
-            "supertrend": 0,
-            "donchian_upper": None,
-            "donchian_lower": None,
-            "donchian_middle": None,
-            "reason": "Scanning for 1H Touch",
-            "timestamp": "",
-        })
-
-        pos = open_by_symbol.get(sym)
-        if pos:
-            result.append(
+            radar_info = telemetry.get(m_id, {}).get(
+                sym,
                 {
+                    "price": round(mark_price, 2),
+                    "bias": "NEUTRAL",
+                    "decision": "",
+                    "atr": None,
+                    "rsi": None,
+                    "supertrend": 0,
+                    "donchian_upper": None,
+                    "donchian_lower": None,
+                    "donchian_middle": None,
+                    "reason": f"Scanning for 1H Touch ({mcfg['short_name']})",
+                    "timestamp": "",
+                },
+            )
+
+            pos = open_by_model_sym.get((m_id, sym))
+            today_realized = float(
+                today_realized_by_model_sym.get((m_id, sym), 0.0)
+                or (today_realized_by_sym.get(sym, 0.0) if m_id == "model_1" else 0.0)
+            )
+
+            if pos:
+                card_data = {
                     "asset": item["asset"],
                     "symbol": sym,
                     "venue": item["venue"],
+                    "model_id": m_id,
+                    "model_name": mcfg["short_name"],
+                    "model_full": mcfg["name"],
+                    "badge_color": mcfg["badge_color"],
+                    "risk_desc": item["risk_desc"],
                     "status": "IN TRADE",
                     "side": pos.get("side", "BUY"),
                     "entry": float(pos.get("open_price", mark_price)),
                     "mark": float(pos.get("current_price", mark_price)),
                     "quantity": float(pos.get("lots", 0.01)),
                     "unrealized_pnl": round(float(pos.get("pnl", 0.0)), 2),
-                    "realized_today": round(float(today_realized_map.get(sym, 0.0)), 2),
+                    "realized_today": round(today_realized, 2),
                     "stop_loss": float(pos.get("sl")) if pos.get("sl") else None,
                     "take_profit": float(pos.get("tp")) if pos.get("tp") else None,
+                    "ticket": str(pos.get("ticket", "")),
+                    "comment": pos.get("comment", ""),
                     "last_update": now_iso,
                     "price_format": item["price_format"],
                     "unit": item["unit"],
                     "radar": radar_info,
                 }
-            )
-        else:
-            result.append(
-                {
+            else:
+                card_data = {
                     "asset": item["asset"],
                     "symbol": sym,
                     "venue": item["venue"],
+                    "model_id": m_id,
+                    "model_name": mcfg["short_name"],
+                    "model_full": mcfg["name"],
+                    "badge_color": mcfg["badge_color"],
+                    "risk_desc": item["risk_desc"],
                     "status": "NO TRADE",
                     "side": None,
                     "entry": None,
                     "mark": round(mark_price, 2),
                     "quantity": 0.0,
                     "unrealized_pnl": 0.0,
-                    "realized_today": round(float(today_realized_map.get(sym, 0.0)), 2),
+                    "realized_today": round(today_realized, 2),
                     "stop_loss": None,
                     "take_profit": None,
+                    "ticket": None,
+                    "comment": None,
                     "last_update": now_iso,
                     "price_format": item["price_format"],
                     "unit": item["unit"],
                     "radar": radar_info,
                 }
-            )
 
-    return result
+            all_cards.append(card_data)
+            cards_by_model[m_id].append(card_data)
+
+    return {
+        "all_cards": all_cards,
+        "cards_by_model": cards_by_model,
+        "open_positions": tagged_positions,
+    }
 
 
 @app.get("/api/health")
@@ -349,7 +552,14 @@ def health():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "broker_connected": broker is not None,
         "account_info": account_info,
+        "models_active": ["model_1", "model_2"],
     }
+
+
+@app.get("/api/dashboard/treasury")
+def get_treasury_status():
+    history_data = fetch_historic_and_pnl_data()
+    return history_data["treasury_model_2"]
 
 
 @app.get("/api/dashboard/overview")
@@ -359,22 +569,84 @@ def get_dashboard_overview():
         return _CACHE["payload"]
 
     history_data = fetch_historic_and_pnl_data()
-    assets_cards = fetch_live_asset_cards(history_data["today_realized_by_sym"])
+    asset_data = fetch_live_asset_cards(
+        history_data["today_realized_by_model_sym"],
+        history_data["today_realized_by_sym"],
+    )
 
-    broker = get_broker()
-    account_info = None
-    if broker:
+    b1 = get_broker(8888)
+    b2 = get_broker(8889)
+    acc1 = None
+    if b1:
         try:
-            account_info = broker.get_account_info()
+            acc1 = b1.get_account_info()
+            if acc1 and "broker" in acc1:
+                acc1["account_name"] = "Model 1 Baseline"
+                acc1["server_name"] = "XMGlobal-MT5 2"
+                acc1["bridge_port"] = 8888
         except Exception as exc:
-            logger.warning(f"Error fetching account info for overview: {exc}")
+            logger.warning(f"Error fetching account 1 info: {exc}")
+
+    acc2 = None
+    if b2:
+        try:
+            acc2 = b2.get_account_info()
+            if acc2 and "broker" in acc2:
+                acc2["account_name"] = "Model 2 Monthly_winsaw"
+                acc2["server_name"] = "XMGlobal-MT5 10"
+                acc2["bridge_port"] = 8889
+        except Exception as exc:
+            logger.warning(f"Error fetching account 2 info: {exc}")
 
     payload = {
-        "assets": assets_cards,
-        "monthly": history_data["monthly"],
-        "overall": history_data["overall"],
+        "assets": asset_data["all_cards"],
+        "assets_model_1": asset_data["cards_by_model"]["model_1"],
+        "assets_model_2": asset_data["cards_by_model"]["model_2"],
+        "open_positions": asset_data["open_positions"],
+        "monthly": history_data["monthly_all"],
+        "overall": history_data["overall_all"],
+        "monthly_by_model": history_data["monthly_by_model"],
+        "overall_by_model": history_data["overall_by_model"],
         "trades": history_data["trades"],
-        "account": account_info,
+        "treasury_model_2": history_data["treasury_model_2"],
+        "account": acc1,
+        "account_model_1": acc1,
+        "account_model_2": acc2,
+        "accounts": {
+            "model_1": acc1,
+            "model_2": acc2,
+        },
+        "models": [
+            {
+                "id": "model_1",
+                "name": "Model 1: Production Baseline",
+                "short_name": "M1 Baseline",
+                "account_id": "168987477",
+                "account_name": "Production Baseline",
+                "server": "XMGlobal-MT5 2",
+                "bridge_port": 8888,
+                "assets": ["XAUUSD", "BTCUSD", "ETHUSD"],
+                "risk": "$75.44 Fixed",
+                "trailing": "Baseline ($4.50 Gold / $350 BTC / $10 ETH)",
+                "concurrency": "Uncapped",
+                "order_tag": "Standard",
+            },
+            {
+                "id": "model_2",
+                "name": "Model 2: Profile A Yield Engine",
+                "short_name": "M2 YieldA",
+                "account_id": "346439083",
+                "account_name": "Monthly_winsaw",
+                "server": "XMGlobal-MT5 10",
+                "bridge_port": 8889,
+                "assets": ["BTCUSD", "ETHUSD"],
+                "risk": "$75.00 Fixed",
+                "trailing": "Tight ($200 BTC / $6 ETH)",
+                "concurrency": "Max 1 Pos / Asset",
+                "order_tag": "YieldA",
+                "treasury_anchor": "$1,500.00 Watermark Harvest",
+            },
+        ],
     }
 
     _CACHE["payload"] = payload
@@ -382,13 +654,13 @@ def get_dashboard_overview():
     return payload
 
 
-# ---- Standalone UI Handler matching Atlas Design ----
+# ---- Standalone UI Handler with Multi-Model Support & Treasury Widget ----
 HTML_CONTENT = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Aegis Alpha | Quantitative Portfolio Overview</title>
+  <title>Aegis Alpha | Multi-Model Quantitative Portfolio</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>
@@ -404,6 +676,8 @@ HTML_CONTENT = """<!DOCTYPE html>
     .donchian-pin { position: absolute; top: -4px; width: 14px; height: 14px; border-radius: 50%; transform: translateX(-50%); }
     .runner-flight-track { position: relative; height: 8px; background: #1f2937; border-radius: 4px; overflow: hidden; }
     .runner-flight-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+    .badge-m1 { background: rgba(14, 165, 233, 0.15); color: #38bdf8; border: 1px solid rgba(14, 165, 233, 0.4); }
+    .badge-m2 { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); }
   </style>
 </head>
 <body class="p-4 md:p-8 max-w-7xl mx-auto">
@@ -414,7 +688,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       <h1 class="text-2xl md:text-3xl font-bold tracking-tight text-white flex items-center gap-2">
         <span>🛡️</span> Aegis Alpha | Quantitative Trading System
       </h1>
-      <p class="text-sm text-gray-400 mt-1">Spot Gold · Bitcoin · Ethereum | Autonomous Execution · ML Meta-Labeling · Risk Shield</p>
+      <p class="text-sm text-gray-400 mt-1">Dual Production Engines · Spot Gold · Bitcoin · Ethereum | Autonomous Execution & ML Gate</p>
     </div>
     <div class="flex flex-wrap items-center gap-3">
       <button id="btn-audio-toggle" onclick="toggleAudioAlerts()" class="text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 px-3 py-1.5 rounded-full text-gray-300 flex items-center gap-1.5 transition-colors cursor-pointer">
@@ -427,31 +701,76 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Macro & Engine Policy Banner -->
-  <div class="bg-gradient-to-r from-gray-900/90 via-gray-900/60 to-gray-900/90 border border-gray-800/80 rounded-xl px-4 py-2.5 my-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
-    <div class="flex items-center gap-2.5">
-      <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-950 text-emerald-400 font-bold border border-emerald-800 text-[11px]">
-        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> NEWS GUARD: CLEAR
-      </span>
-      <span class="text-gray-300">Execution window clear · No high-impact catalysts (CPI/NFP/FOMC) scheduled within ±15m.</span>
+  <!-- Multi-Model Switcher Tabs -->
+  <div class="flex flex-wrap items-center justify-between gap-3 my-4 p-2 bg-gray-900/80 border border-gray-800 rounded-xl">
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-xs font-bold text-gray-400 uppercase tracking-wider px-2">Active Model:</span>
+      <button onclick="setActiveModelView('model_1')" id="tab-m1" class="px-4 py-2 rounded-lg text-xs font-bold transition-all bg-sky-600 text-white shadow-sm border border-sky-500">
+        🛡️ Model 1: Production Baseline (Gold · BTC · ETH)
+      </button>
+      <button onclick="setActiveModelView('model_2')" id="tab-m2" class="px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700">
+        ⚡ Model 2: Profile A Yield (BTC · ETH · Harvest)
+      </button>
+      <button onclick="setActiveModelView('ALL')" id="tab-all" class="px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700">
+        🌐 Consolidated Portfolio Overview
+      </button>
     </div>
-    <div class="flex flex-wrap items-center gap-3 text-gray-400 font-mono text-[11px]">
-      <span>Mode: <strong class="text-white">FLAT_RISK_TOUCH</strong> ($75.44 Risk)</span>
-      <span class="text-gray-700">|</span>
-      <span>Target 1: <strong class="text-emerald-400">1.25R (+50% Cash)</strong></span>
-      <span class="text-gray-700">|</span>
-      <span>Target 2: <strong class="text-emerald-400">3.0R (Risk-Free Runner)</strong></span>
+    <div class="text-xs text-gray-400 flex items-center gap-2 px-2">
+      <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+      <span id="model-status-indicator">Both Engines Active on MT5</span>
+    </div>
+  </div>
+
+  <!-- Model 2 Treasury Harvest Widget (Hidden when Model 1 is active) -->
+  <div id="treasury-card" class="bg-gradient-to-r from-purple-950/40 via-gray-900/90 to-purple-950/40 border border-purple-500/30 rounded-xl p-4 my-4 shadow-lg" style="display: none;">
+    <div class="flex flex-col md:flex-row md:items-center justify-between pb-3 border-b border-purple-500/20 gap-3">
+      <div class="flex items-center gap-2.5">
+        <span class="px-2.5 py-1 rounded-full text-xs font-bold bg-purple-900/60 text-purple-300 border border-purple-600/50 flex items-center gap-1.5">
+          <span>🏛️</span> MODEL 2 TREASURY HARVEST
+        </span>
+        <span class="text-xs text-gray-300">Monthly Watermark Rule: Harvest 100% of profits above Anchor Seed; replenish if deficit.</span>
+      </div>
+      <div id="treasury-status-badge" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-purple-950 text-purple-300 border border-purple-800">
+        BASELINE SECURED ($1,500.00)
+      </div>
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3 text-center">
+      <div class="bg-gray-900/60 p-2.5 rounded-lg border border-gray-800">
+        <div class="text-[11px] text-gray-400 uppercase tracking-wider">Anchor Capital Seed</div>
+        <div class="flex items-center justify-center gap-1 mt-1">
+          <span class="text-gray-400 text-sm">$</span>
+          <input type="number" id="input-anchor-seed" value="1500" step="50" min="100" 
+                 class="bg-gray-800 text-white font-bold text-lg font-mono rounded px-2 py-0.5 w-28 text-center border border-gray-700 focus:border-purple-500 focus:outline-none"
+                 oninput="onAnchorSeedChange(this.value)" />
+        </div>
+        <div class="text-[10px] text-purple-400 mt-0.5">Editable Seed Input</div>
+      </div>
+      <div class="bg-gray-900/60 p-2.5 rounded-lg border border-gray-800">
+        <div class="text-[11px] text-gray-400 uppercase tracking-wider">Current Month P&L</div>
+        <div id="treasury-month-pnl" class="text-xl font-bold text-emerald-400 font-mono mt-0.5">+$0.00</div>
+        <div class="text-[10px] text-gray-500">October 2026 Engine P&L</div>
+      </div>
+      <div class="bg-purple-950/40 p-2.5 rounded-lg border border-purple-500/30">
+        <div class="text-[11px] text-purple-300 uppercase tracking-wider font-semibold">Ready to Harvest Cash</div>
+        <div id="treasury-surplus" class="text-xl font-bold text-emerald-400 font-mono mt-0.5">$0.00</div>
+        <div class="text-[10px] text-purple-400/80">Surplus above Anchor Seed</div>
+      </div>
+      <div class="bg-gray-900/60 p-2.5 rounded-lg border border-gray-800">
+        <div class="text-[11px] text-gray-400 uppercase tracking-wider">Deficit Top-Up Needed</div>
+        <div id="treasury-deficit" class="text-xl font-bold text-gray-300 font-mono mt-0.5">$0.00</div>
+        <div class="text-[10px] text-gray-500">Replenishment required</div>
+      </div>
     </div>
   </div>
 
   <!-- Master KPI Metrics -->
   <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 my-4">
     <div class="metric-card border border-emerald-500/30">
-      <div class="text-xs font-medium text-emerald-400 uppercase tracking-wider">Account Balance</div>
+      <div id="label-account-balance" class="text-xs font-medium text-emerald-400 uppercase tracking-wider">Account Balance</div>
       <div id="metric-account-balance" class="text-2xl font-bold text-white mt-1">$0.00</div>
     </div>
     <div class="metric-card border border-emerald-500/30">
-      <div class="text-xs font-medium text-emerald-400 uppercase tracking-wider">Account Equity</div>
+      <div id="label-account-equity" class="text-xs font-medium text-emerald-400 uppercase tracking-wider">Account Equity</div>
       <div id="metric-account-equity" class="text-2xl font-bold text-white mt-1">$0.00</div>
     </div>
     <div class="metric-card">
@@ -467,8 +786,8 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div id="metric-total-pnl" class="text-2xl font-bold text-white mt-1">$0.00</div>
     </div>
     <div class="metric-card">
-      <div class="text-xs font-medium text-gray-400 uppercase tracking-wider">Assets in Trade</div>
-      <div id="metric-active-count" class="text-2xl font-bold text-white mt-1">0 / 3</div>
+      <div class="text-xs font-medium text-gray-400 uppercase tracking-wider">Active In Trade</div>
+      <div id="metric-active-count" class="text-2xl font-bold text-white mt-1">0 Positions</div>
     </div>
   </div>
 
@@ -508,22 +827,31 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Asset Cards -->
-  <h2 class="text-lg font-semibold text-gray-200 mb-3 flex items-center gap-2">
-    <span>💎</span> Active Asset Status & Bot Market Radar
-  </h2>
-  <div id="asset-cards-grid" class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
+  <!-- Asset Cards Section -->
+  <div class="flex items-center justify-between mb-3 mt-8">
+    <h2 class="text-lg font-semibold text-gray-200 flex items-center gap-2">
+      <span>💎</span> Active Asset Status & Bot Market Radars
+    </h2>
+    <span id="asset-card-count" class="text-xs text-gray-400 font-mono">Showing 5 Setups across 2 Models</span>
+  </div>
+  <div id="asset-cards-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 mb-8">
     <!-- Populated dynamically via JS -->
   </div>
 
   <!-- Charts Section -->
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 my-8">
     <div class="metric-card">
-      <h3 class="text-base font-semibold text-gray-200 mb-2">Month-on-Month Realized P&L</h3>
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-base font-semibold text-gray-200">Month-on-Month Realized P&L</h3>
+        <span id="chart-monthly-tag" class="text-xs text-gray-400 font-mono">All Models</span>
+      </div>
       <div id="chart-monthly" style="height: 320px;"></div>
     </div>
     <div class="metric-card">
-      <h3 class="text-base font-semibold text-gray-200 mb-2">Overall Cumulative Realized P&L</h3>
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-base font-semibold text-gray-200">Overall Cumulative Realized P&L</h3>
+        <span id="chart-overall-tag" class="text-xs text-gray-400 font-mono">All Models</span>
+      </div>
       <div id="chart-overall" style="height: 320px;"></div>
     </div>
   </div>
@@ -533,9 +861,14 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-800 gap-3">
       <div>
         <h3 class="text-base font-semibold text-gray-200">Trade Activity (Fills & Executions)</h3>
-        <p class="text-[11px] text-gray-500 mt-0.5">Click column headers to sort · Click any row to expand ticket & SL/TP details</p>
+        <p class="text-[11px] text-gray-500 mt-0.5">Click column headers to sort · Click any row to expand ticket, model & SL/TP details</p>
       </div>
       <div class="flex flex-wrap items-center gap-2.5">
+        <select id="model-filter" onchange="onFilterChange()" class="bg-gray-800 border border-gray-700 text-xs rounded-lg px-2.5 py-1.5 text-gray-300 focus:outline-none focus:border-emerald-500 cursor-pointer">
+          <option value="ALL">All Models</option>
+          <option value="model_1">Model 1 (Baseline)</option>
+          <option value="model_2">Model 2 (Profile A Yield)</option>
+        </select>
         <select id="asset-filter" onchange="onFilterChange()" class="bg-gray-800 border border-gray-700 text-xs rounded-lg px-2.5 py-1.5 text-gray-300 focus:outline-none focus:border-emerald-500 cursor-pointer">
           <option value="ALL">All Assets</option>
           <option value="XAUUSD">Gold (XAUUSD)</option>
@@ -560,6 +893,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         <thead class="text-gray-400 uppercase bg-gray-900/50 select-none">
           <tr>
             <th class="py-2.5 px-3 cursor-pointer hover:text-white transition-colors" onclick="sortTable('time')">Time (UTC) <span id="sort-time" class="text-gray-500">↕</span></th>
+            <th class="py-2.5 px-3">Model</th>
             <th class="py-2.5 px-3 cursor-pointer hover:text-white transition-colors" onclick="sortTable('asset')">Asset <span id="sort-asset" class="text-gray-500">↕</span></th>
             <th class="py-2.5 px-3 cursor-pointer hover:text-white transition-colors" onclick="sortTable('side')">Side <span id="sort-side" class="text-gray-500">↕</span></th>
             <th class="py-2.5 px-3 cursor-pointer hover:text-white transition-colors" onclick="sortTable('qty')">Quantity <span id="sort-qty" class="text-gray-500">↕</span></th>
@@ -567,7 +901,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <th class="py-2.5 px-3">Entry</th>
             <th class="py-2.5 px-3">Exit</th>
             <th class="py-2.5 px-3 cursor-pointer hover:text-white transition-colors" onclick="sortTable('pnl')">P&L ($) <span id="sort-pnl" class="text-gray-500">↕</span></th>
-            <th class="py-2.5 px-3">Strategy</th>
+            <th class="py-2.5 px-3">Strategy / Tag</th>
           </tr>
         </thead>
         <tbody id="trades-tbody" class="divide-y divide-gray-800/60 font-mono">
@@ -602,21 +936,23 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="font-bold text-emerald-400 mt-1">ONLINE (MT5 Socket)</div>
     </div>
     <div class="metric-card text-center">
-      <div class="text-gray-400">Trading Engine</div>
-      <div class="font-bold text-emerald-400 mt-1">FLAT_RISK_TOUCH</div>
+      <div class="text-gray-400">Model 1 Engine</div>
+      <div class="font-bold text-sky-400 mt-1">FLAT_RISK ($75.44)</div>
     </div>
     <div class="metric-card text-center">
-      <div class="text-gray-400">News Catalyst Guard</div>
-      <div class="font-bold text-emerald-400 mt-1">ACTIVE (±15m)</div>
+      <div class="text-gray-400">Model 2 Engine</div>
+      <div class="font-bold text-purple-400 mt-1">PROFILE A ($75 · $1.5K)</div>
     </div>
     <div class="metric-card text-center">
-      <div class="text-gray-400">ML Meta-Labeling</div>
-      <div class="font-bold text-emerald-400 mt-1">P ≥ 0.44 Gate</div>
+      <div class="text-gray-400">Catalyst Guard & ML</div>
+      <div class="font-bold text-emerald-400 mt-1">ACTIVE (±15m · P≥0.48)</div>
     </div>
   </div>
 
   <script>
     let globalData = null;
+    let activeModelView = "model_1"; // Default to Model 1 tab
+    let customAnchorSeed = parseFloat(localStorage.getItem("aegis_anchor_seed") || "1500");
     let showClosed = true;
     let tradesCurrentPage = 1;
     let tradesPageSize = 10;
@@ -644,6 +980,17 @@ HTML_CONTENT = """<!DOCTYPE html>
       initAudioUI();
       if (audioAlertsEnabled) {
         playChime();
+      }
+    }
+
+    function onAnchorSeedChange(val) {
+      const num = parseFloat(val);
+      if (!isNaN(num) && num > 0) {
+        customAnchorSeed = num;
+        localStorage.setItem("aegis_anchor_seed", num.toString());
+        if (globalData && globalData.treasury_model_2) {
+          renderTreasuryWidget(globalData.treasury_model_2);
+        }
       }
     }
 
@@ -676,7 +1023,40 @@ HTML_CONTENT = """<!DOCTYPE html>
       return (val < 0 ? "-" : "") + "$" + Math.abs(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
+    function setActiveModelView(m) {
+      activeModelView = m;
+      const isM1 = m === "model_1";
+      const isM2 = m === "model_2";
+      const isAll = m === "ALL";
+
+      const btnM1 = document.getElementById("tab-m1");
+      const btnM2 = document.getElementById("tab-m2");
+      const btnAll = document.getElementById("tab-all");
+
+      if (btnM1) btnM1.className = isM1 ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-sky-600 text-white shadow-sm border border-sky-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
+      if (btnM2) btnM2.className = isM2 ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-purple-600 text-white shadow-sm border border-purple-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
+      if (btnAll) btnAll.className = isAll ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-emerald-600 text-white shadow-sm border border-emerald-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
+
+      // Synchronize trade filter dropdown
+      const modelDropdown = document.getElementById("model-filter");
+      if (modelDropdown) {
+        modelDropdown.value = m;
+      }
+
+      tradesCurrentPage = 1;
+      expandedTradeIndex = null;
+      if (globalData) {
+        updateView();
+      }
+    }
+
     function onFilterChange() {
+      const modelDropdown = document.getElementById("model-filter");
+      if (modelDropdown && modelDropdown.value !== activeModelView) {
+        activeModelView = modelDropdown.value;
+        setActiveModelView(activeModelView);
+        return;
+      }
       tradesCurrentPage = 1;
       expandedTradeIndex = null;
       renderTrades();
@@ -706,7 +1086,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         sortAsc = !sortAsc;
       } else {
         sortColumn = col;
-        sortAsc = col === "asset" || col === "side" || col === "status";
+        sortAsc = col === "asset" || col === "side" || col === "status" || col === "model_id";
       }
       tradesCurrentPage = 1;
       renderTrades();
@@ -722,16 +1102,19 @@ HTML_CONTENT = """<!DOCTYPE html>
         alert("No trades available to export.");
         return;
       }
+      const modelFilter = document.getElementById("model-filter").value;
       const assetFilter = document.getElementById("asset-filter").value;
       const sideFilter = document.getElementById("side-filter").value;
       let list = globalData.trades;
+      if (modelFilter !== "ALL") list = list.filter(t => t.model_id === modelFilter);
       if (assetFilter !== "ALL") list = list.filter(t => t.asset && t.asset.toUpperCase() === assetFilter.toUpperCase());
       if (sideFilter !== "ALL") list = list.filter(t => t.side && t.side.toUpperCase() === sideFilter.toUpperCase());
       if (!showClosed) list = list.filter(t => t.status === "OPEN" || t.status === "ACTIVE");
 
-      const headers = ["Time (UTC)", "Ticket", "Asset", "Side", "Quantity", "Status", "Entry Price", "Exit Price", "Stop Loss", "Target 1", "Realized P&L ($)", "Strategy"];
+      const headers = ["Time (UTC)", "Model", "Ticket", "Asset", "Side", "Quantity", "Status", "Entry Price", "Exit Price", "Stop Loss", "Target 1", "Realized P&L ($)", "Strategy"];
       const rows = list.map(t => [
         `"${t.time}"`,
+        `"${t.model_name}"`,
         `"${t.ticket || ''}"`,
         `"${t.asset}"`,
         `"${t.side}"`,
@@ -758,8 +1141,11 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     function computePerformanceKPIs(trades) {
-      if (!trades || trades.length === 0) return;
-      const closed = trades.filter(t => t.status === "CLOSED");
+      let filtered = trades || [];
+      if (activeModelView !== "ALL") {
+        filtered = filtered.filter(t => t.model_id === activeModelView);
+      }
+      const closed = filtered.filter(t => t.status === "CLOSED");
       if (closed.length === 0) {
         document.getElementById("stat-win-rate").innerText = "0.0%";
         document.getElementById("stat-win-loss-count").innerText = "0W / 0L (0 Trades)";
@@ -782,7 +1168,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       const avgLoss = losses.length > 0 ? (grossLoss / losses.length).toFixed(2) : "0.00";
       const expectancy = ((grossWin - grossLoss) / closed.length).toFixed(2);
 
-      // Max Drawdown calculation chronologically
       let peak = 0;
       let cum = 0;
       let maxDD = 0;
@@ -804,20 +1189,60 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById("stat-max-dd").innerText = `-$${maxDD.toFixed(2)}`;
     }
 
+    function renderTreasuryWidget(treasury) {
+      if (!treasury) return;
+      const anchorInput = document.getElementById("input-anchor-seed");
+      if (anchorInput && document.activeElement !== anchorInput) {
+        anchorInput.value = customAnchorSeed;
+      }
+      
+      const monthPnl = parseFloat(treasury.current_month_pnl || 0);
+      const surplus = Math.max(0, monthPnl);
+      const deficit = Math.abs(Math.min(0, monthPnl));
+
+      document.getElementById("treasury-month-pnl").innerText = `${monthPnl >= 0 ? '+' : ''}${formatMoney(monthPnl)}`;
+      document.getElementById("treasury-month-pnl").className = `text-xl font-bold font-mono mt-0.5 ${monthPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+      document.getElementById("treasury-surplus").innerText = formatMoney(surplus);
+      document.getElementById("treasury-deficit").innerText = formatMoney(deficit);
+
+      const badge = document.getElementById("treasury-status-badge");
+      if (badge) {
+        if (surplus > 0) {
+          badge.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-950 text-emerald-400 border border-emerald-800 animate-pulse";
+          badge.innerText = `READY TO HARVEST (+${formatMoney(surplus)})`;
+        } else if (deficit > 0) {
+          badge.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-950 text-rose-400 border border-rose-800";
+          badge.innerText = `DEFICIT (TOP-UP ${formatMoney(deficit)})`;
+        } else {
+          badge.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-purple-950 text-purple-300 border border-purple-800";
+          badge.innerText = `BASELINE SECURED (${formatMoney(customAnchorSeed)})`;
+        }
+      }
+    }
+
     function renderAssetCards(assets) {
       const container = document.getElementById("asset-cards-grid");
       container.innerHTML = "";
-      assets.forEach(a => {
+
+      let filtered = assets || [];
+      if (activeModelView !== "ALL") {
+        filtered = filtered.filter(a => a.model_id === activeModelView);
+      }
+
+      document.getElementById("asset-card-count").innerText = `Showing ${filtered.length} Setups (${activeModelView === 'ALL' ? 'Both Models' : (activeModelView === 'model_1' ? 'Model 1 Baseline' : 'Model 2 Profile A')})`;
+
+      filtered.forEach(a => {
         const inTrade = a.status === "IN TRADE";
         const pillClass = inTrade ? "status-pill" : "status-pill status-idle";
         const pillText = inTrade ? "🟢 IN TRADE" : "⚪ SCANNING";
         const pnl = parseFloat(a.unrealized_pnl || 0);
         const pnlClass = pnl >= 0 ? "pnl-pos" : "pnl-neg";
         const radar = a.radar || {};
+        const isM1 = a.model_id === "model_1";
+        const modelBadgeClass = isM1 ? "badge-m1" : "badge-m2";
 
         let detailsHtml = "";
         if (inTrade) {
-          // Flight path calculation
           const entry = parseFloat(a.entry || a.mark);
           const mark = parseFloat(a.mark || entry);
           const sl = parseFloat(a.stop_loss || (entry - 10));
@@ -858,7 +1283,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             </div>
           `;
         } else {
-          // Market Radar Box
           const bias = (radar.bias || "NEUTRAL").toUpperCase();
           let biasBadge = `<span class="px-2 py-0.5 rounded text-[10px] bg-gray-800 text-gray-400 border border-gray-700 font-bold">NEUTRAL ↔</span>`;
           if (bias === "BEARISH") {
@@ -911,9 +1335,9 @@ HTML_CONTENT = """<!DOCTYPE html>
                 </div>
               </div>
 
-              <!-- Bot Rationale Box -->
-              <div class="bg-gray-900/50 p-2 rounded border border-gray-800/60 text-[11px] text-gray-400 line-clamp-2" title="${radar.reason || 'Scanning for 1H Donchian touch'}">
-                <span class="text-gray-500">Bot:</span> ${radar.reason || 'Scanning for 1H Touch breakout.'}
+              <!-- Setup / Policy Description -->
+              <div class="bg-gray-900/50 p-2 rounded border border-gray-800/60 text-[11px] text-gray-400 line-clamp-2" title="${a.risk_desc}">
+                <span class="text-gray-500">Setup:</span> ${a.risk_desc}
               </div>
 
               <div class="flex justify-between pt-1 border-t border-gray-800/60 text-[11px]">
@@ -929,7 +1353,10 @@ HTML_CONTENT = """<!DOCTYPE html>
         card.innerHTML = `
           <div class="flex items-center justify-between">
             <div>
-              <h3 class="text-lg font-bold text-white">${a.asset}</h3>
+              <div class="flex items-center gap-2">
+                <h3 class="text-lg font-bold text-white">${a.asset}</h3>
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold ${modelBadgeClass}">${a.model_name}</span>
+              </div>
               <p class="text-xs text-gray-400">${a.symbol} · ${a.venue}</p>
             </div>
             <span class="${pillClass}">${pillText}</span>
@@ -947,10 +1374,27 @@ HTML_CONTENT = """<!DOCTYPE html>
       });
     }
 
-    function renderCharts(monthly, overall) {
-      if (monthly && monthly.length > 0) {
-        const xMonths = monthly.map(m => m.month.slice(0, 7));
-        const yPnl = monthly.map(m => m.pnl);
+    function renderCharts(monthly, overall, monthlyByModel, overallByModel) {
+      let mList = monthly || [];
+      let oList = overall || [];
+      let label = "All Models";
+
+      if (activeModelView === "model_1") {
+        mList = (monthlyByModel && monthlyByModel.model_1) || [];
+        oList = (overallByModel && overallByModel.model_1) || [];
+        label = "Model 1 (Baseline)";
+      } else if (activeModelView === "model_2") {
+        mList = (monthlyByModel && monthlyByModel.model_2) || [];
+        oList = (overallByModel && overallByModel.model_2) || [];
+        label = "Model 2 (Profile A Yield)";
+      }
+
+      document.getElementById("chart-monthly-tag").innerText = label;
+      document.getElementById("chart-overall-tag").innerText = label;
+
+      if (mList && mList.length > 0) {
+        const xMonths = mList.map(m => m.month.slice(0, 7));
+        const yPnl = mList.map(m => m.pnl);
         const colors = yPnl.map(p => p >= 0 ? '#16a34a' : '#dc2626');
 
         Plotly.react('chart-monthly', [{
@@ -968,9 +1412,9 @@ HTML_CONTENT = """<!DOCTYPE html>
         }, { responsive: true, displayModeBar: false });
       }
 
-      if (overall && overall.length > 0) {
-        const xDates = overall.map(o => o.date);
-        const yCum = overall.map(o => o.cumulative_pnl);
+      if (oList && oList.length > 0) {
+        const xDates = oList.map(o => o.date);
+        const yCum = oList.map(o => o.cumulative_pnl);
 
         Plotly.react('chart-overall', [{
           x: xDates,
@@ -993,12 +1437,16 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     function renderTrades() {
       if (!globalData || !globalData.trades) return;
+      const modelFilter = document.getElementById("model-filter").value;
       const assetFilter = document.getElementById("asset-filter").value;
       const sideFilter = document.getElementById("side-filter").value;
       const tbody = document.getElementById("trades-tbody");
       tbody.innerHTML = "";
 
       let filtered = [...globalData.trades];
+      if (modelFilter !== "ALL") {
+        filtered = filtered.filter(t => t.model_id === modelFilter);
+      }
       if (assetFilter !== "ALL") {
         filtered = filtered.filter(t => t.asset && t.asset.toUpperCase() === assetFilter.toUpperCase());
       }
@@ -1048,7 +1496,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
       if (pageItems.length === 0) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="9" class="py-8 text-center text-gray-500 italic font-sans">No trade activity recorded</td>`;
+        tr.innerHTML = `<td colspan="10" class="py-8 text-center text-gray-500 italic font-sans">No trade activity recorded for this filter</td>`;
         tbody.appendChild(tr);
       } else {
         pageItems.forEach((t, i) => {
@@ -1061,6 +1509,9 @@ HTML_CONTENT = """<!DOCTYPE html>
             ? `<span class="px-2 py-0.5 rounded text-[10px] bg-gray-800 text-gray-400">CLOSED</span>`
             : `<span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 font-bold border border-emerald-800">OPEN</span>`;
 
+          const isM1 = t.model_id === "model_1";
+          const modelBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold ${isM1 ? 'badge-m1' : 'badge-m2'}">${t.model_name}</span>`;
+
           const isExpanded = expandedTradeIndex === globalIdx;
 
           const tr = document.createElement("tr");
@@ -1068,6 +1519,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           tr.onclick = () => toggleTradeRow(globalIdx);
           tr.innerHTML = `
             <td class="py-2.5 px-3 text-gray-400 whitespace-nowrap">${t.time}</td>
+            <td class="py-2.5 px-3 whitespace-nowrap">${modelBadge}</td>
             <td class="py-2.5 px-3 font-semibold text-white">${t.asset}</td>
             <td class="py-2.5 px-3 ${sideClass} font-bold">${t.side}</td>
             <td class="py-2.5 px-3 text-gray-300">${t.qty}</td>
@@ -1083,7 +1535,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             const detailTr = document.createElement("tr");
             detailTr.className = "bg-gray-900/70 border-b border-gray-800";
             detailTr.innerHTML = `
-              <td colspan="9" class="p-3">
+              <td colspan="10" class="p-3">
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-sans">
                   <div class="bg-gray-800/50 p-2 rounded border border-gray-700/60">
                     <span class="text-gray-400 block text-[10px]">MT5 Deal Ticket</span>
@@ -1098,8 +1550,8 @@ HTML_CONTENT = """<!DOCTYPE html>
                     <span class="font-mono text-emerald-400 font-bold">${formatMoney(t.tp)}</span>
                   </div>
                   <div class="bg-gray-800/50 p-2 rounded border border-gray-700/60">
-                    <span class="text-gray-400 block text-[10px]">Execution Comment</span>
-                    <span class="font-mono text-gray-300">${t.strategy || 'AI-FlatRisk'}</span>
+                    <span class="text-gray-400 block text-[10px]">Execution Model & Comment</span>
+                    <span class="font-mono text-gray-300">${t.model_full} · ${t.comment || 'None'}</span>
                   </div>
                 </div>
               </td>
@@ -1173,6 +1625,93 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
     }
 
+    function updateView() {
+      if (!globalData) return;
+      const data = globalData;
+
+      // 100% Segregation: Hide Treasury Card in Model 1; Show in Model 2 and Consolidated
+      const treasuryCard = document.getElementById("treasury-card");
+      if (treasuryCard) {
+        if (activeModelView === "model_1") {
+          treasuryCard.style.display = "none";
+        } else {
+          treasuryCard.style.display = "block";
+        }
+      }
+
+      // Update KPIs based on activeModelView
+      let activeCards = data.assets || [];
+      let activeTrades = data.trades || [];
+      if (activeModelView !== "ALL") {
+        activeCards = activeCards.filter(a => a.model_id === activeModelView);
+        activeTrades = activeTrades.filter(t => t.model_id === activeModelView);
+      }
+
+      const openPnl = activeCards.reduce((sum, a) => sum + (parseFloat(a.unrealized_pnl) || 0), 0);
+      const todayRealized = activeCards.reduce((sum, a) => sum + (parseFloat(a.realized_today) || 0), 0);
+      const activeCount = activeCards.filter(a => a.status === "IN TRADE").length;
+
+      let totalRealized = 0;
+      if (activeModelView === "ALL") {
+        totalRealized = data.monthly.reduce((sum, m) => sum + (parseFloat(m.pnl) || 0), 0);
+      } else if (activeModelView === "model_1") {
+        totalRealized = (data.monthly_by_model.model_1 || []).reduce((sum, m) => sum + (parseFloat(m.pnl) || 0), 0);
+      } else if (activeModelView === "model_2") {
+        totalRealized = (data.monthly_by_model.model_2 || []).reduce((sum, m) => sum + (parseFloat(m.pnl) || 0), 0);
+      }
+
+      document.getElementById("metric-total-pnl").innerText = formatMoney(totalRealized);
+      document.getElementById("metric-open-pnl").innerText = formatMoney(openPnl);
+      document.getElementById("metric-today-pnl").innerText = formatMoney(todayRealized);
+      document.getElementById("metric-active-count").innerText = `${activeCount} / ${activeCards.length}`;
+
+      document.getElementById("metric-total-pnl").className = "text-2xl font-bold mt-1 " + (totalRealized >= 0 ? "text-emerald-400" : "text-rose-400");
+      document.getElementById("metric-open-pnl").className = "text-2xl font-bold mt-1 " + (openPnl >= 0 ? "text-emerald-400" : "text-rose-400");
+      document.getElementById("metric-today-pnl").className = "text-2xl font-bold mt-1 " + (todayRealized >= 0 ? "text-emerald-400" : "text-rose-400");
+
+      // Dynamic Dual-Account Display based on activeModelView
+      const badge = document.getElementById("broker-status-badge");
+      const balEl = document.getElementById("metric-account-balance");
+      const eqEl = document.getElementById("metric-account-equity");
+      const accLabelEl = document.getElementById("label-account-balance");
+      const accEqLabelEl = document.getElementById("label-account-equity");
+
+      const acc1 = data.account_model_1 || data.account || {};
+      const acc2 = data.account_model_2 || {};
+      const bal1 = parseFloat(acc1.balance) || 0;
+      const bal2 = parseFloat(acc2.balance) || 0;
+      const eq1 = parseFloat(acc1.equity) || 0;
+      const eq2 = parseFloat(acc2.equity) || 0;
+
+      if (activeModelView === "model_1") {
+        if (balEl) balEl.innerText = formatMoney(bal1);
+        if (eqEl) eqEl.innerText = formatMoney(eq1);
+        if (accLabelEl) accLabelEl.innerText = "Model 1 Balance (#" + (acc1.account_id || "168987477") + ")";
+        if (accEqLabelEl) accEqLabelEl.innerText = "Model 1 Equity";
+        if (badge) badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-sky-400 animate-pulse"></span> MT5 Demo #${acc1.account_id || '168987477'} (${formatMoney(bal1)}) Connected`;
+      } else if (activeModelView === "model_2") {
+        if (balEl) balEl.innerText = formatMoney(bal2);
+        if (eqEl) eqEl.innerText = formatMoney(eq2);
+        if (accLabelEl) accLabelEl.innerText = "Monthly_winsaw Balance (#" + (acc2.account_id || "346439083") + ")";
+        if (accEqLabelEl) accEqLabelEl.innerText = "Monthly_winsaw Equity";
+        if (badge) badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></span> MT5 'Monthly_winsaw' #${acc2.account_id || '346439083'} (${formatMoney(bal2)}) Connected`;
+      } else {
+        const totalBal = bal1 + bal2;
+        const totalEq = eq1 + eq2;
+        if (balEl) balEl.innerText = formatMoney(totalBal);
+        if (eqEl) eqEl.innerText = formatMoney(totalEq);
+        if (accLabelEl) accLabelEl.innerText = "Combined Dual Account Balance";
+        if (accEqLabelEl) accEqLabelEl.innerText = "Combined Total Equity";
+        if (badge) badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Dual MT5 Accounts Connected (${formatMoney(totalBal)})`;
+      }
+
+      computePerformanceKPIs(data.trades);
+      renderTreasuryWidget(data.treasury_model_2);
+      renderAssetCards(data.assets);
+      renderCharts(data.monthly, data.overall, data.monthly_by_model, data.overall_by_model);
+      renderTrades();
+    }
+
     async function refreshDashboard() {
       try {
         const res = await fetch("/api/dashboard/overview");
@@ -1180,7 +1719,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         const data = await res.json();
         globalData = data;
 
-        // Check for new trades to chime
         if (data.trades) {
           const currentCount = data.trades.length;
           if (previousTradeCount !== null && currentCount > previousTradeCount) {
@@ -1189,47 +1727,13 @@ HTML_CONTENT = """<!DOCTYPE html>
           previousTradeCount = currentCount;
         }
 
-        // Update Account Info
-        if (data.account && data.account.balance !== undefined) {
-          const bal = parseFloat(data.account.balance);
-          const eq = parseFloat(data.account.equity);
-          document.getElementById("metric-account-balance").innerText = formatMoney(bal);
-          document.getElementById("metric-account-equity").innerText = formatMoney(eq);
-          const badge = document.getElementById("broker-status-badge");
-          if (badge) {
-            const accNum = data.account.account_id || "168987477";
-            badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> MT5 Demo #${accNum} (${formatMoney(bal)}) Connected`;
-          }
-        }
-
-        // Update KPIs
-        const openPnl = data.assets.reduce((sum, a) => sum + (parseFloat(a.unrealized_pnl) || 0), 0);
-        const todayRealized = data.assets.reduce((sum, a) => sum + (parseFloat(a.realized_today) || 0), 0);
-        const activeCount = data.assets.filter(a => a.status === "IN TRADE").length;
-        const totalRealized = data.monthly.reduce((sum, m) => sum + (parseFloat(m.pnl) || 0), 0);
-
-        document.getElementById("metric-total-pnl").innerText = formatMoney(totalRealized);
-        document.getElementById("metric-open-pnl").innerText = formatMoney(openPnl);
-        document.getElementById("metric-today-pnl").innerText = formatMoney(todayRealized);
-        document.getElementById("metric-active-count").innerText = `${activeCount} / 3`;
-
-        // Style KPIs
-        document.getElementById("metric-total-pnl").className = "text-2xl font-bold mt-1 " + (totalRealized >= 0 ? "text-emerald-400" : "text-rose-400");
-        document.getElementById("metric-open-pnl").className = "text-2xl font-bold mt-1 " + (openPnl >= 0 ? "text-emerald-400" : "text-rose-400");
-        document.getElementById("metric-today-pnl").className = "text-2xl font-bold mt-1 " + (todayRealized >= 0 ? "text-emerald-400" : "text-rose-400");
-
-        computePerformanceKPIs(data.trades);
-        renderAssetCards(data.assets);
-        renderCharts(data.monthly, data.overall);
-        renderTrades();
-
+        updateView();
         document.getElementById("last-refresh").innerText = "Updated " + new Date().toLocaleTimeString();
       } catch (err) {
         console.error("Dashboard refresh error:", err);
       }
     }
 
-    // Adaptive Eco-Refresh Loop: 3s when active, 10s when backgrounded
     let refreshTimer = null;
     function scheduleEcoRefresh() {
       if (refreshTimer) clearTimeout(refreshTimer);

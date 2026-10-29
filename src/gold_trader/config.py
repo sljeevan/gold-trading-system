@@ -34,6 +34,13 @@ def _load_env_file() -> None:
 _load_env_file()
 
 
+def get_data_dir() -> str:
+    """Returns the base data and telemetry directory, respecting GOLD_TRADING_DATA_DIR."""
+    path = os.getenv("GOLD_TRADING_DATA_DIR", "~/.gold_trading_data")
+    expanded = os.path.expanduser(path)
+    os.makedirs(expanded, exist_ok=True)
+    return expanded
+
 
 @dataclass(frozen=True)
 class Settings:

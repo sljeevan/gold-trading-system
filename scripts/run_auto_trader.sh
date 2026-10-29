@@ -30,7 +30,8 @@ exec $PYTHON_BIN -u -m gold_trader.scripts.run_auto_trader \
     --max-positions 0 \
     --runner-target-2-multiplier 3.00 \
     --enable-ml-filter \
-    --ml-min-prob 0.44 \
+    --ml-min-prob 0.50 \
+    --require-slope-alignment \
     --one-trade-per-bar \
     --loss-cooldown-minutes 60 \
     --max-daily-trades 6 \

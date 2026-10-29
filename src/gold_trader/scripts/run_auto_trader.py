@@ -66,11 +66,15 @@ def main():
     parser.add_argument("--enable-news-catalyst-guard", action=argparse.BooleanOptionalAction, default=True, help="Pause trades ±15m around high-impact US macro events (CPI, NFP, FOMC)")
     parser.add_argument("--news-guard-buffer-minutes", type=int, default=15, help="Minutes blackout buffer before/after high-impact news (default: 15)")
     parser.add_argument("--enable-ml-filter", action=argparse.BooleanOptionalAction, default=True, help="Enable Machine Learning win probability filter gate (default: True)")
-    parser.add_argument("--ml-min-prob", type=float, default=0.52, help="Minimum win probability threshold for ML filter (default: 0.52)")
+    parser.add_argument("--ml-min-prob", type=float, default=0.50, help="Minimum win probability threshold for ML filter (default: 0.50)")
     parser.add_argument("--ml-dynamic-sizing", action=argparse.BooleanOptionalAction, default=False, help="Enable dynamic ML confidence-weighted position sizing (default: False)")
     parser.add_argument("--ml-model-path", default=None, help="Custom path to ML model joblib file")
+    parser.add_argument("--adx-min-threshold", type=float, default=None, help="Minimum 1H ADX trend strength threshold (default: 22.0 for ETH, None for others)")
+    parser.add_argument("--require-slope-alignment", action=argparse.BooleanOptionalAction, default=True, help="Require 50 EMA slope alignment in trade direction (default: True)")
     parser.add_argument("--ladder-state-file", default=None, help="[Deprecated/Ignored] Path to ladder state JSON file")
     parser.add_argument("--db-path", default=None, help="Path to SQLite database file")
+    parser.add_argument("--order-tag", default=None, help="Order comment tag for multi-engine isolation (e.g. YieldA)")
+    parser.add_argument("--bridge-port", type=int, default=8888, help="TCP port of the MT5 Socket Bridge (default: 8888)")
 
     args = parser.parse_args()
 
@@ -116,11 +120,14 @@ def main():
         ml_min_probability=args.ml_min_prob,
         ml_dynamic_sizing=args.ml_dynamic_sizing,
         ml_model_path=args.ml_model_path,
+        adx_min_threshold=args.adx_min_threshold,
+        require_slope_alignment=args.require_slope_alignment,
         ladder_state_file=args.ladder_state_file,
         db_path=args.db_path,
+        order_tag=args.order_tag,
     )
 
-    trader = GoldAutoTrader(broker=SocketBroker(), config_override=cfg)
+    trader = GoldAutoTrader(broker=SocketBroker(port=args.bridge_port), config_override=cfg)
 
     logger.info("=" * 60)
     logger.info(f"🚀 24/7 Autonomous {cfg.symbol} Trading Engine Initialized")
@@ -131,6 +138,7 @@ def main():
     logger.info(f"   Daily Trade Cap: {cfg.max_daily_trades} | Session Filter: {cfg.session_filter}")
     logger.info(f"   News Catalyst Guard (OpenBB): {cfg.enable_news_catalyst_guard} (±{cfg.news_guard_buffer_minutes}m buffer)")
     logger.info(f"   ML Meta-Labeling Filter: {cfg.enable_ml_filter} (Min Win Prob: {cfg.ml_min_probability:.1%}, Dynamic Sizing: {cfg.ml_dynamic_sizing})")
+    logger.info(f"   Regime Safeguards: ADX Filter: {cfg.adx_min_threshold} | 50 EMA Slope Alignment: {cfg.require_slope_alignment}")
     logger.info(f"   Auto Execute: {cfg.auto_execute} | Max Open: {cfg.max_open_positions}")
     logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
     logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (0.5R Dynamic Buffer: {cfg.runner_trail_buffer_r:.2f}R [~${cfg.runner_trail_buffer_usd:.2f}] | T2: {cfg.runner_target_2_multiplier:.2f}R)")

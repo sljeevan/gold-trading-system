@@ -79,6 +79,7 @@ class TestGoldAutoTrader(unittest.TestCase):
             trail_to_breakeven_at_t1=True,
             session_filter=False,
             send_telegram_alerts=False,
+            enable_news_catalyst_guard=False,
         )
         self.mock_notifier = MagicMock()
         self.trader = GoldAutoTrader(
@@ -407,6 +408,23 @@ class TestGoldAutoTrader(unittest.TestCase):
         first_modify_idx = call_sequence.index("broker_modify")
         first_tg_idx = call_sequence.index("telegram_notify")
         self.assertLess(first_modify_idx, first_tg_idx, "Broker modification MUST execute before Telegram notification to prevent lag!")
+
+    def test_order_tag_isolation(self):
+        """Verify that get_matching_open_positions filters out positions from other models."""
+        self.trader.config.order_tag = "YieldA"
+        self.trader.config.symbol = "ETHUSD"
+        self.broker.open_pos = [
+            {"ticket": "1001", "symbol": "ETHUSD", "comment": "AI-FlatRisk-ETHUSD", "lots": 3.55},
+            {"ticket": "1002", "symbol": "ETHUSD", "comment": "YieldA-ETHUSD", "lots": 3.55},
+        ]
+        matching = self.trader.get_matching_open_positions()
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["ticket"], "1002")
+
+        # Fast manage cycle should also only count YieldA positions
+        res = self.trader.manage_active_positions()
+        self.assertEqual(res["open_positions_count"], 1)
+        self.assertEqual(res["open_positions"][0]["ticket"], "1002")
 
 
 if __name__ == "__main__":

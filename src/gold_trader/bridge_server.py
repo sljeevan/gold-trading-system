@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone, timedelta
+import argparse
 from typing import Any, Dict
 
 import MetaTrader5 as mt5
@@ -19,24 +20,27 @@ import MetaTrader5 as mt5
 HOST = "127.0.0.1"
 PORT = 8888
 PATH = r"C:\Program Files\XM Global MT5\terminal64.exe"
+ENV_PREFIX = "XM_DEMO"
 
 def get_env_credentials():
     login = 168987477
     server = "XMGlobal-MT5 2"
     password = ""
     env_path = "/home/mcpuser/MCP/gold-trading-system/.env"
+    prefix = ENV_PREFIX
     if os.path.exists(env_path):
         with open(env_path, encoding="utf-8") as f:
             for line in f:
-                if line.startswith("XM_DEMO_PASSWORD="):
-                    password = line.strip().split("=", 1)[1].strip().strip("\"'")
-                elif line.startswith("XM_DEMO_LOGIN="):
+                line = line.strip()
+                if line.startswith(f"{prefix}_PASSWORD="):
+                    password = line.split("=", 1)[1].strip().strip("\"'")
+                elif line.startswith(f"{prefix}_LOGIN="):
                     try:
-                        login = int(line.strip().split("=", 1)[1].strip().strip("\"'"))
+                        login = int(line.split("=", 1)[1].strip().strip("\"'"))
                     except:
                         pass
-                elif line.startswith("XM_DEMO_SERVER="):
-                    server = line.strip().split("=", 1)[1].strip().strip("\"'")
+                elif line.startswith(f"{prefix}_SERVER="):
+                    server = line.split("=", 1)[1].strip().strip("\"'")
     return login, password, server
 
 def ensure_mt5():
@@ -598,7 +602,20 @@ def handle_client(conn: socket.socket, addr: Any):
         conn.close()
 
 def run_server():
-    print(f"Starting XM MT5 Bridge Server on {HOST}:{PORT}...", flush=True)
+    global HOST, PORT, PATH, ENV_PREFIX
+    parser = argparse.ArgumentParser(description="XM MT5 Socket Bridge Server")
+    parser.add_argument("--host", default=HOST, help="Host to bind (default 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=PORT, help="Port to listen on (default 8888)")
+    parser.add_argument("--path", default=PATH, help="Path to terminal64.exe")
+    parser.add_argument("--prefix", default=ENV_PREFIX, help="Environment variable prefix for credentials (e.g. XM_DEMO, XM_YIELDA)")
+    args = parser.parse_args()
+
+    HOST = args.host
+    PORT = args.port
+    PATH = args.path
+    ENV_PREFIX = args.prefix
+
+    print(f"Starting XM MT5 Bridge Server on {HOST}:{PORT} (Profile: {ENV_PREFIX}, Path: {PATH})...", flush=True)
     if not ensure_mt5():
         print("Warning: Initial MT5 connection attempt failed. Will retry on request.", flush=True)
     else:

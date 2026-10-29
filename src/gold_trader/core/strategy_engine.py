@@ -17,6 +17,7 @@ from gold_trader.core.compounding_ladder import (
 from gold_trader.core.data_feed import fetch_gold_candles
 from gold_trader.core.fibonacci import analyze_gold_fibonacci
 from gold_trader.core.indicators import (
+    calc_adx,
     calc_atr,
     calc_donchian,
     calc_ema,
@@ -598,10 +599,17 @@ def generate_donchian_momentum_hybrid_setup(
     trend_filter_ema: int = 50,
     trigger_mode: str = "TOUCH",
     runner_t2_multiplier: float = 3.0,
+    adx_min_threshold: Optional[float] = None,
+    require_slope_alignment: bool = True,
 ) -> Dict[str, Any]:
     """
-    High-Velocity Donchian 10 Touch + SuperTrend + 50 EMA Strategy for Gold (XAUUSD).
-    Configurable for both Bar Close and Intrabar Touch execution with Fast Target (1.25R).
+    High-Velocity Donchian 10 Touch + SuperTrend + 50 EMA Strategy for Gold (XAUUSD), BTC & ETH.
+    Features:
+    - Intrabar Touch execution with wholesale limit pricing
+    - Rejection Wick Confirmation: rejects entry if opposing pin-bar upper/lower wick > 1.8x body
+    - Directional Candle Confirmation: avoids entering on strongly adverse opposing bars (c >= o for BUY, c <= o for SELL)
+    - 50 EMA Slope Alignment: rejects buying when 50 EMA is sloping down, rejects selling when sloping up
+    - Regime-Aware ADX Guard: suppresses trades in non-trending sideways consolidation (e.g. ADX < 22 on ETH)
     """
     candles_entry = fetch_gold_candles(symbol, period="3mo", interval=timeframe)
     if len(candles_entry) < 35:
@@ -622,6 +630,7 @@ def generate_donchian_momentum_hybrid_setup(
     atr_series = calc_atr(highs, lows, closes, 14)
     rsi_series = calc_rsi(closes, 14)
     macd_res = calc_macd(closes, 12, 26, 9)
+    adx_dict = calc_adx(highs, lows, closes, 14)
 
     c = closes[-1]
     h = highs[-1]
@@ -634,6 +643,13 @@ def generate_donchian_momentum_hybrid_setup(
     st_dir = st["direction"][-1]
     ema200_val = ema200_series[-1]
     ema50_val = ema50_series[-1]
+
+    adx_val = adx_dict["adx"][-1] if (adx_dict and adx_dict.get("adx") and adx_dict["adx"][-1] is not None) else 20.0
+
+    # 5-bar EMA 50 slope percentage
+    ema50_slope = 0.0
+    if len(ema50_series) >= 6 and ema50_series[-1] is not None and ema50_series[-6] is not None and ema50_series[-6] > 0:
+        ema50_slope = ((ema50_series[-1] - ema50_series[-6]) / ema50_series[-6]) * 100.0
 
     # Donchian channel values of previous bar
     prev_d_up = dc["upper"][-2] if n >= 2 else None
@@ -668,6 +684,10 @@ def generate_donchian_momentum_hybrid_setup(
     setup_name = "None"
     quality_score = 50
 
+    # ADX regime guard
+    eff_adx_threshold = adx_min_threshold if adx_min_threshold is not None else (22.0 if "ETH" in symbol.upper() else 0.0)
+    adx_ok = (eff_adx_threshold <= 0.0) or (adx_val >= eff_adx_threshold)
+
     # -------------------------------------------------------------
     # TRIGGER 1: Donchian Channel Breakout / Touch with Price Action Filter
     # -------------------------------------------------------------
@@ -686,11 +706,30 @@ def generate_donchian_momentum_hybrid_setup(
         else:
             is_bear_trigger = c < prev_d_low and c < o and st_dir == -1 and macro_bearish and rsi_val >= 25.0
 
+        # ADX regime check
+        if not adx_ok:
+            if is_bull_trigger or is_bear_trigger:
+                reasons.append(f"Regime Guard: 1H ADX({adx_val:.1f}) < {eff_adx_threshold:.1f}. Sideways consolidation filter active.")
+            is_bull_trigger = False
+            is_bear_trigger = False
+
+        # EMA 50 Slope direction check
+        if require_slope_alignment:
+            if is_bull_trigger and ema50_slope < 0.0:
+                reasons.append(f"Slope Guard: 50 EMA slope is negative ({ema50_slope:.3f}%). Rejecting BUY against slope.")
+                is_bull_trigger = False
+            elif is_bear_trigger and ema50_slope > 0.0:
+                reasons.append(f"Slope Guard: 50 EMA slope is positive ({ema50_slope:.3f}%). Rejecting SELL against slope.")
+                is_bear_trigger = False
+
+        min_body = max(1.0, 0.15 * atr_val)
+
         if is_bull_trigger:
             body = max(c - o, 0.0)
             upper_wick = h - max(c, o)
-            # Price action filter: reject if excessive upper wick suggests strong overhead selling
-            if upper_wick <= 1.8 * max(body, 1.0) or trigger_mode == "TOUCH":
+            wick_ok = upper_wick <= 1.8 * max(body, min_body)
+            candle_ok = (c >= o)  # Not an adverse red candle
+            if wick_ok and candle_ok:
                 action = "BUY"
                 mode_tag = "Touch" if trigger_mode == "TOUCH" else "Breakout"
                 setup_name = f"Donchian {donchian_period}-Bar {mode_tag} + SuperTrend"
@@ -698,18 +737,25 @@ def generate_donchian_momentum_hybrid_setup(
                 reasons.append(f"Price reached {donchian_period}-bar Donchian High (${prev_d_up:.2f})")
                 reasons.append("SuperTrend(10, 3.0) is Bullish (Green)")
                 reasons.append(f"Macro Trend is Bullish above {macro_desc}")
+                reasons.append(f"50 EMA Slope Confirmed ({ema50_slope:+.3f}%)")
                 reasons.append(f"Targeting Fast {rr_multiplier}R Profit Objective")
                 if is_overlap:
                     quality_score += 3
                     reasons.append(f"Active in London/NY Overlap ({hour:02d}:00 UTC)")
             else:
-                reasons.append(f"Breakout rejected by Price Action: Excessive upper wick (${upper_wick:.2f} vs body ${body:.2f})")
+                fail_reasons = []
+                if not wick_ok:
+                    fail_reasons.append(f"Excessive upper rejection wick (${upper_wick:.2f} vs body ${body:.2f})")
+                if not candle_ok:
+                    fail_reasons.append("Bearish adverse red candle close")
+                reasons.append(f"Breakout rejected by Price Action: {'; '.join(fail_reasons)}")
 
         elif is_bear_trigger:
             body = max(o - c, 0.0)
             lower_wick = min(c, o) - l
-            # Price action filter: reject if excessive lower wick suggests strong buying support
-            if lower_wick <= 1.8 * max(body, 1.0) or trigger_mode == "TOUCH":
+            wick_ok = lower_wick <= 1.8 * max(body, min_body)
+            candle_ok = (c <= o)  # Not an adverse green candle
+            if wick_ok and candle_ok:
                 action = "SELL"
                 mode_tag = "Touch" if trigger_mode == "TOUCH" else "Breakdown"
                 setup_name = f"Donchian {donchian_period}-Bar {mode_tag} + SuperTrend"
@@ -717,12 +763,18 @@ def generate_donchian_momentum_hybrid_setup(
                 reasons.append(f"Price reached {donchian_period}-bar Donchian Low (${prev_d_low:.2f})")
                 reasons.append("SuperTrend(10, 3.0) is Bearish (Red)")
                 reasons.append(f"Macro Trend is Bearish below {macro_desc}")
+                reasons.append(f"50 EMA Slope Confirmed ({ema50_slope:+.3f}%)")
                 reasons.append(f"Targeting Fast {rr_multiplier}R Profit Objective")
                 if is_overlap:
                     quality_score += 3
                     reasons.append(f"Active in London/NY Overlap ({hour:02d}:00 UTC)")
             else:
-                reasons.append(f"Breakdown rejected by Price Action: Excessive lower wick (${lower_wick:.2f} vs body ${body:.2f})")
+                fail_reasons = []
+                if not wick_ok:
+                    fail_reasons.append(f"Excessive lower rejection wick (${lower_wick:.2f} vs body ${body:.2f})")
+                if not candle_ok:
+                    fail_reasons.append("Bullish adverse green candle close")
+                reasons.append(f"Breakdown rejected by Price Action: {'; '.join(fail_reasons)}")
 
     # -------------------------------------------------------------
     # TRIGGER 2: Momentum Continuation (SuperTrend + MACD Cross)
@@ -741,32 +793,55 @@ def generate_donchian_momentum_hybrid_setup(
             m_curr, m_sig_curr = macd_line[-1], macd_sig[-1]
             m_prev, m_sig_prev = macd_line[-2], macd_sig[-2]
 
+            min_body = max(1.0, 0.15 * atr_val)
+
             # Bullish Momentum Continuation Cross
             if st_dir == 1 and macro_bullish and (m_prev <= m_sig_prev and m_curr > m_sig_curr) and (45.0 <= rsi_val <= 70.0) and c > o:
-                action = "BUY"
-                setup_name = "SuperTrend + MACD Momentum Continuation"
-                quality_score = 90
-                reasons.append("MACD Line crossed above Signal Line in Bullish Trend")
-                reasons.append("SuperTrend(10, 3.0) is Bullish (Green)")
-                reasons.append(f"Macro Trend is Bullish above {macro_desc}")
-                reasons.append(f"Price Action: Green candle body confirmation (${o:.2f} -> ${c:.2f})")
-                reasons.append(f"RSI {rsi_val:.1f} in prime trend acceleration zone (45-70)")
-                if is_overlap:
-                    quality_score += 3
-                    reasons.append(f"Active in London/NY Overlap ({hour:02d}:00 UTC)")
+                upper_wick = h - max(c, o)
+                body = max(c - o, 0.0)
+                wick_ok = upper_wick <= 1.8 * max(body, min_body)
+                slope_ok = not require_slope_alignment or ema50_slope >= 0.0
+                if wick_ok and slope_ok and adx_ok:
+                    action = "BUY"
+                    setup_name = "SuperTrend + MACD Momentum Continuation"
+                    quality_score = 90
+                    reasons.append("MACD Line crossed above Signal Line in Bullish Trend")
+                    reasons.append("SuperTrend(10, 3.0) is Bullish (Green)")
+                    reasons.append(f"Macro Trend is Bullish above {macro_desc}")
+                    reasons.append(f"Price Action: Green candle body confirmation (${o:.2f} -> ${c:.2f})")
+                    reasons.append(f"RSI {rsi_val:.1f} in prime trend acceleration zone (45-70)")
+                    if is_overlap:
+                        quality_score += 3
+                        reasons.append(f"Active in London/NY Overlap ({hour:02d}:00 UTC)")
+                else:
+                    if not wick_ok:
+                        reasons.append(f"Momentum continuation rejected: Upper rejection wick (${upper_wick:.2f})")
+                    if not slope_ok:
+                        reasons.append(f"Momentum continuation rejected: EMA slope negative ({ema50_slope:.3f}%)")
 
             # Bearish Momentum Continuation Cross
             elif st_dir == -1 and macro_bearish and (m_prev >= m_sig_prev and m_curr < m_sig_curr) and (30.0 <= rsi_val <= 55.0) and c < o:
-                action = "SELL"
-                setup_name = "SuperTrend + MACD Momentum Continuation"
-                quality_score = 90
-                reasons.append("MACD Line crossed below Signal Line in Bearish Trend")
-                reasons.append("SuperTrend(10, 3.0) is Bearish (Red)")
-                reasons.append(f"Macro Trend is Bearish below {macro_desc}")
-                reasons.append(f"Price Action: Red candle body confirmation (${o:.2f} -> ${c:.2f})")
-                reasons.append(f"RSI {rsi_val:.1f} in prime trend breakdown zone (30-55)")
-                if is_overlap:
-                    quality_score += 3
+                lower_wick = min(c, o) - l
+                body = max(o - c, 0.0)
+                wick_ok = lower_wick <= 1.8 * max(body, min_body)
+                slope_ok = not require_slope_alignment or ema50_slope <= 0.0
+                if wick_ok and slope_ok and adx_ok:
+                    action = "SELL"
+                    setup_name = "SuperTrend + MACD Momentum Continuation"
+                    quality_score = 90
+                    reasons.append("MACD Line crossed below Signal Line in Bearish Trend")
+                    reasons.append("SuperTrend(10, 3.0) is Bearish (Red)")
+                    reasons.append(f"Macro Trend is Bearish below {macro_desc}")
+                    reasons.append(f"Price Action: Red candle body confirmation (${o:.2f} -> ${c:.2f})")
+                    reasons.append(f"RSI {rsi_val:.1f} in prime trend breakdown zone (30-55)")
+                    if is_overlap:
+                        quality_score += 3
+                        reasons.append(f"Active in London/NY Overlap ({hour:02d}:00 UTC)")
+                else:
+                    if not wick_ok:
+                        reasons.append(f"Momentum breakdown rejected: Lower rejection wick (${lower_wick:.2f})")
+                    if not slope_ok:
+                        reasons.append(f"Momentum breakdown rejected: EMA slope positive ({ema50_slope:.3f}%)")
                     reasons.append(f"Active in London/NY Overlap ({hour:02d}:00 UTC)")
 
     if action == "HOLD" and not reasons:
@@ -853,6 +928,8 @@ def generate_compounding_ladder_setup(
     rr_multiplier: float = 1.25,
     trend_filter_ema: int = 50,
     trigger_mode: str = "TOUCH",
+    adx_min_threshold: Optional[float] = None,
+    require_slope_alignment: bool = True,
 ) -> Dict[str, Any]:
     """
     Generate trade execution setup tailored specifically to the Compounding Ladder Plan.
@@ -890,6 +967,8 @@ def generate_compounding_ladder_setup(
             rr_multiplier=rr_multiplier,
             trend_filter_ema=trend_filter_ema,
             trigger_mode=trigger_mode,
+            adx_min_threshold=adx_min_threshold,
+            require_slope_alignment=require_slope_alignment,
         )
         if "error" in setup_data:
             return setup_data

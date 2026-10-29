@@ -79,11 +79,14 @@ class AutoTraderConfig:
     enable_news_catalyst_guard: bool = True
     news_guard_buffer_minutes: int = 15
     enable_ml_filter: bool = False
-    ml_min_probability: float = 0.52
+    ml_min_probability: float = 0.50
     ml_dynamic_sizing: bool = False
     ml_model_path: Optional[str] = None
+    adx_min_threshold: Optional[float] = None
+    require_slope_alignment: bool = True
     ladder_state_file: Optional[str] = None
     db_path: Optional[str] = None
+    order_tag: Optional[str] = None
 
 
 
@@ -181,7 +184,18 @@ class GoldAutoTrader:
         """Fetch active broker positions matching this trader's symbol family."""
         try:
             positions = self.broker.get_open_positions()
-            return [p for p in positions if self._is_matching_symbol(str(p.get("symbol", "")), self.config.symbol)]
+            matched = [p for p in positions if self._is_matching_symbol(str(p.get("symbol", "")), self.config.symbol)]
+            if self.config.order_tag:
+                matched = [
+                    p for p in matched
+                    if str(p.get("ticket")) in self.tracked_positions or str(p.get("comment", "")).startswith(self.config.order_tag)
+                ]
+            else:
+                matched = [
+                    p for p in matched
+                    if not str(p.get("comment", "")).startswith("YieldA")
+                ]
+            return matched
         except Exception as e:
             logger.debug(f"Failed to fetch open positions: {e}")
             return []
@@ -225,6 +239,11 @@ class GoldAutoTrader:
             }
 
         sym_open_positions = [p for p in open_positions if self._is_matching_symbol(str(p.get("symbol", "")), symbol)]
+        if self.config.order_tag:
+            sym_open_positions = [
+                p for p in sym_open_positions
+                if str(p.get("ticket")) in self.tracked_positions or str(p.get("comment", "")).startswith(self.config.order_tag)
+            ]
 
         # 1. Detect closed positions (exits) and dispatch alerts / update state
         self._detect_and_notify_exits(open_positions, current_balance=balance)
@@ -433,6 +452,8 @@ class GoldAutoTrader:
                 rr_multiplier=self.config.min_risk_reward,
                 trend_filter_ema=self.config.trend_filter_ema,
                 trigger_mode=self.config.trigger_mode,
+                adx_min_threshold=self.config.adx_min_threshold,
+                require_slope_alignment=self.config.require_slope_alignment,
             )
             if "error" in setup:
                 self.log_scan(symbol, 0.0, "ERROR", "None", "HOLD", 0, 0.0, f"Error: {setup.get('error')}", setup)
@@ -546,7 +567,27 @@ class GoldAutoTrader:
             rejection_reasons.append(f"R:R ratio {rr_t1:.2f} < minimum {self.config.min_risk_reward:.2f}.")
 
         sym_open_positions = [p for p in open_positions if self._is_matching_symbol(str(p.get("symbol", "")), symbol)]
+        if self.config.order_tag:
+            sym_open_positions = [
+                p for p in sym_open_positions
+                if str(p.get("ticket")) in self.tracked_positions or str(p.get("comment", "")).startswith(self.config.order_tag)
+            ]
+        else:
+            sym_open_positions = [
+                p for p in sym_open_positions
+                if not str(p.get("comment", "")).startswith("YieldA")
+            ]
         sym_pending_orders = [po for po in pending_orders if self._is_matching_symbol(str(po.get("symbol", "")), symbol)]
+        if self.config.order_tag:
+            sym_pending_orders = [
+                po for po in sym_pending_orders
+                if str(po.get("comment", "")).startswith(self.config.order_tag)
+            ]
+        else:
+            sym_pending_orders = [
+                po for po in sym_pending_orders
+                if not str(po.get("comment", "")).startswith("YieldA")
+            ]
 
         active_exposure = len(sym_open_positions) + len(sym_pending_orders)
         if self.config.max_open_positions and self.config.max_open_positions > 0:
@@ -710,7 +751,7 @@ class GoldAutoTrader:
                         else:
                             tp2 = tp1
 
-                    order_comment = f"AI-FlatRisk-{symbol}"
+                    order_comment = f"{self.config.order_tag}-{symbol}" if self.config.order_tag else f"AI-FlatRisk-{symbol}"
                     actual_tp = tp2 if (self.config.enable_partial_scale_out or self.config.enable_runner_trailing or self.config.mode in ("DONCHIAN_BREAKOUT", "DONCHIAN_MOMENTUM_HYBRID", "HYBRID")) and tp2 else tp1
                     order_result = self.broker.place_order(
                         symbol="GOLD" if "GOLD" in symbol else symbol,
@@ -843,6 +884,9 @@ class GoldAutoTrader:
                 p_sym = str(p.get("symbol", ""))
                 if not self._is_matching_symbol(p_sym, self.config.symbol):
                     continue
+                if self.config.order_tag:
+                    if ticket not in self.tracked_positions and not str(p.get("comment", "")).startswith(self.config.order_tag):
+                        continue
 
                 open_price = float(p.get("open_price", 0.0))
                 current_price = float(p.get("current_price", 0.0))
