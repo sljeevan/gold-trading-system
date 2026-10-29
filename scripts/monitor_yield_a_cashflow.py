@@ -34,7 +34,7 @@ def get_monthly_deals_from_db() -> Dict[str, Dict[str, float]]:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT strftime('%Y-%m', timestamp) as yr_mo, SUM(realized_pnl) 
+                SELECT strftime('%Y-%m', timestamp) as yr_mo, SUM(pnl) 
                 FROM trade_executions 
                 WHERE status = 'CLOSED' 
                 GROUP BY yr_mo

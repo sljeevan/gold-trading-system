@@ -413,8 +413,13 @@ with tab_m2:
     else:
         m2_month_pnl = float(treasury_data.get("current_month_pnl", 0.0))
 
-    harvest_surplus = max(0.0, m2_month_pnl)
-    deficit_needed = abs(min(0.0, m2_month_pnl))
+    # Calculate actual effective equity against the user's anchor seed
+    acc_m2 = data.get("account_model_2") or {}
+    live_m2_equity = float(acc_m2.get("equity") or acc_m2.get("balance") or 0.0)
+    current_equity = live_m2_equity if live_m2_equity > 0 else (anchor_seed_input + m2_month_pnl)
+
+    harvest_surplus = max(0.0, round(current_equity - anchor_seed_input, 2))
+    deficit_needed = max(0.0, round(anchor_seed_input - current_equity, 2))
 
     with t_calc_col:
         t1, t2, t3 = st.columns(3)

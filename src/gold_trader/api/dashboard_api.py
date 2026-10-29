@@ -223,7 +223,7 @@ def fetch_latest_scan_telemetry() -> Dict[str, Dict[str, Any]]:
     return telemetry
 
 
-def fetch_historic_and_pnl_data() -> Dict[str, Any]:
+def fetch_historic_and_pnl_data(m2_account: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     monthly_pnl_all = defaultdict(float)
     monthly_pnl_by_model = {"model_1": defaultdict(float), "model_2": defaultdict(float)}
 
@@ -334,11 +334,29 @@ def fetch_historic_and_pnl_data() -> Dict[str, Any]:
     m2_total_realized = sum(t["pnl"] for t in m2_closed_trades)
 
     anchor = 1500.0
-    cur_equity = round(anchor + m2_cur_month_pnl, 2)
-    surplus = round(max(0.0, m2_cur_month_pnl), 2)
-    deficit = round(abs(min(0.0, m2_cur_month_pnl)), 2)
+    live_m2_equity = 0.0
+    if m2_account and isinstance(m2_account, dict):
+        live_m2_equity = float(m2_account.get("equity") or m2_account.get("balance") or 0.0)
+    else:
+        # Fallback to query port 8889 broker if available
+        b2 = get_broker(8889)
+        if b2:
+            try:
+                acc_info = b2.get_account_info()
+                if acc_info and isinstance(acc_info, dict):
+                    live_m2_equity = float(acc_info.get("equity") or acc_info.get("balance") or 0.0)
+            except Exception:
+                pass
 
-    status_text = "READY TO HARVEST" if surplus > 0 else ("DEFICIT (Top-up Required)" if deficit > 0 else "BASELINE SECURED ($1,500.00)")
+    cur_equity = round(live_m2_equity if live_m2_equity > 0 else (anchor + m2_cur_month_pnl), 2)
+    surplus = round(max(0.0, cur_equity - anchor), 2)
+    deficit = round(max(0.0, anchor - cur_equity), 2)
+
+    status_text = (
+        f"READY TO HARVEST (+${surplus:,.2f})"
+        if surplus > 0
+        else (f"DEFICIT (Top-up Required: ${deficit:,.2f})" if deficit > 0 else f"BASELINE SECURED (${anchor:,.2f})")
+    )
 
     m2_wins = [t for t in m2_closed_trades if t["pnl"] > 0]
     win_rate_m2 = round(len(m2_wins) / len(m2_closed_trades) * 100, 1) if m2_closed_trades else 0.0
@@ -568,12 +586,6 @@ def get_dashboard_overview():
     if _CACHE["payload"] and (now_ts - _CACHE["timestamp"] < _CACHE["ttl_seconds"]):
         return _CACHE["payload"]
 
-    history_data = fetch_historic_and_pnl_data()
-    asset_data = fetch_live_asset_cards(
-        history_data["today_realized_by_model_sym"],
-        history_data["today_realized_by_sym"],
-    )
-
     b1 = get_broker(8888)
     b2 = get_broker(8889)
     acc1 = None
@@ -597,6 +609,12 @@ def get_dashboard_overview():
                 acc2["bridge_port"] = 8889
         except Exception as exc:
             logger.warning(f"Error fetching account 2 info: {exc}")
+
+    history_data = fetch_historic_and_pnl_data(m2_account=acc2)
+    asset_data = fetch_live_asset_cards(
+        history_data["today_realized_by_model_sym"],
+        history_data["today_realized_by_sym"],
+    )
 
     payload = {
         "assets": asset_data["all_cards"],
@@ -1196,9 +1214,14 @@ HTML_CONTENT = """<!DOCTYPE html>
         anchorInput.value = customAnchorSeed;
       }
       
+      const anchor = customAnchorSeed || parseFloat(treasury.anchor_capital || 1500.0);
+      const equity = parseFloat(treasury.current_month_equity || 0);
       const monthPnl = parseFloat(treasury.current_month_pnl || 0);
-      const surplus = Math.max(0, monthPnl);
-      const deficit = Math.abs(Math.min(0, monthPnl));
+
+      // Determine effective equity vs anchor seed
+      const effectiveEquity = equity > 0 ? equity : (anchor + monthPnl);
+      const surplus = Math.max(0, Math.round((effectiveEquity - anchor) * 100) / 100);
+      const deficit = Math.max(0, Math.round((anchor - effectiveEquity) * 100) / 100);
 
       document.getElementById("treasury-month-pnl").innerText = `${monthPnl >= 0 ? '+' : ''}${formatMoney(monthPnl)}`;
       document.getElementById("treasury-month-pnl").className = `text-xl font-bold font-mono mt-0.5 ${monthPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
@@ -1215,7 +1238,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           badge.innerText = `DEFICIT (TOP-UP ${formatMoney(deficit)})`;
         } else {
           badge.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-purple-950 text-purple-300 border border-purple-800";
-          badge.innerText = `BASELINE SECURED (${formatMoney(customAnchorSeed)})`;
+          badge.innerText = `BASELINE SECURED (${formatMoney(anchor)})`;
         }
       }
     }

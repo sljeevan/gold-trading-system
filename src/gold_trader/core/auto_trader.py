@@ -1122,8 +1122,11 @@ class GoldAutoTrader:
                     if sym_info and sym_info.get("status") == "SUCCESS":
                         close_price = float(sym_info.get("bid" if side.upper() == "BUY" else "ask", entry_price))
                     else:
-                        snapshot = get_live_gold_snapshot()
-                        close_price = float(snapshot.get("spot_gold", {}).get("price", entry_price))
+                        if is_btc or is_eth:
+                            close_price = entry_price
+                        else:
+                            snapshot = get_live_gold_snapshot()
+                            close_price = float(snapshot.get("spot_gold", {}).get("price", entry_price))
                 except:
                     close_price = entry_price
 
