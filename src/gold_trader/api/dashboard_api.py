@@ -580,6 +580,24 @@ def get_treasury_status():
     return history_data["treasury_model_2"]
 
 
+@app.get("/api/strategies")
+def get_strategies_catalog(status: Optional[str] = None, asset: Optional[str] = None):
+    from gold_trader.core.strategy_catalog import StrategyStatus, list_strategies
+    st_enum = None
+    if status:
+        try:
+            st_enum = StrategyStatus(status)
+        except Exception:
+            pass
+    strategies = list_strategies(status=st_enum, asset=asset)
+    return {
+        "status": "SUCCESS",
+        "total": len(strategies),
+        "strategies": [s.to_dict() for s in strategies],
+    }
+
+
+
 @app.get("/api/dashboard/overview")
 def get_dashboard_overview():
     now_ts = time.time()
@@ -732,12 +750,19 @@ HTML_CONTENT = """<!DOCTYPE html>
       <button onclick="setActiveModelView('ALL')" id="tab-all" class="px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700">
         🌐 Consolidated Portfolio Overview
       </button>
+      <button onclick="setActiveModelView('STRATEGIES')" id="tab-strat" class="px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700">
+        📚 Strategy Library & Vault
+      </button>
     </div>
     <div class="text-xs text-gray-400 flex items-center gap-2 px-2">
       <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
       <span id="model-status-indicator">Both Engines Active on MT5</span>
     </div>
   </div>
+
+  <!-- Main Trading Views (Hidden when Strategy Vault is active) -->
+  <div id="main-trading-views">
+
 
   <!-- Master KPI Metrics -->
   <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 my-4">
@@ -924,6 +949,57 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="font-bold text-emerald-400 mt-1">ACTIVE (±15m · P≥0.48)</div>
     </div>
   </div>
+  </div> <!-- Close #main-trading-views -->
+
+  <!-- Strategy Library & Vault View -->
+  <div id="strategy-catalog-view" class="hidden my-6 space-y-6">
+    <div class="p-5 bg-gradient-to-r from-indigo-950/40 via-purple-950/20 to-gray-900 border border-indigo-500/30 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="text-2xl">📚</span>
+          <h2 class="text-lg font-bold text-indigo-400">Aegis Alpha Strategy Catalog & Quantitative Architecture Repository</h2>
+        </div>
+        <p class="text-xs text-gray-400 mt-1">Persistent system memory storing all production, staged, benchmarked, and research trading strategies with audited 3Y & 5Y backtests, full algorithmic entry/exit rules, and CLI activation commands for future reference.</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="px-3 py-1.5 rounded-full text-xs font-bold bg-indigo-900/60 text-indigo-300 border border-indigo-700/60">
+          9 Strategies Stored
+        </span>
+      </div>
+    </div>
+
+    <!-- Strategy Filter Bar -->
+    <div class="flex flex-wrap items-center gap-3 p-3 bg-gray-900/80 border border-gray-800 rounded-xl">
+      <div class="flex-1 min-w-[200px]">
+        <input type="text" id="strat-search" oninput="renderStrategies()" placeholder="🔍 Search strategies by name, rule, or indicator..." class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500">
+      </div>
+      <div>
+        <select id="strat-filter-status" onchange="renderStrategies()" class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500">
+          <option value="ALL">All Statuses</option>
+          <option value="ACTIVE_PRODUCTION">ACTIVE_PRODUCTION</option>
+          <option value="ACTIVE_YIELD_A">ACTIVE_YIELD_A</option>
+          <option value="BENCHMARKED_READY">BENCHMARKED_READY (>54% WR)</option>
+          <option value="STAGED_FOR_ACTIVATION">STAGED_FOR_ACTIVATION</option>
+          <option value="RESEARCH_BENCHMARKED">RESEARCH_BENCHMARKED</option>
+          <option value="DISQUALIFIED">DISQUALIFIED</option>
+        </select>
+      </div>
+      <div>
+        <select id="strat-filter-asset" onchange="renderStrategies()" class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500">
+          <option value="ALL">All Assets</option>
+          <option value="XAUUSD">XAUUSD (Gold)</option>
+          <option value="BTCUSD">BTCUSD (Bitcoin)</option>
+          <option value="ETHUSD">ETHUSD (Ethereum)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Strategy Cards Grid -->
+    <div id="strategy-cards-container" class="space-y-4">
+      <div class="p-8 text-center text-gray-400 text-xs font-mono">Loading Strategy Vault...</div>
+    </div>
+  </div>
+
 
   <script>
     let globalData = null;
@@ -987,23 +1063,42 @@ HTML_CONTENT = """<!DOCTYPE html>
       return (val < 0 ? "-" : "") + "$" + Math.abs(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
+    let strategiesData = null;
+
     function setActiveModelView(m) {
       activeModelView = m;
       const isM1 = m === "model_1";
       const isM2 = m === "model_2";
       const isAll = m === "ALL";
+      const isStrat = m === "STRATEGIES";
 
       const btnM1 = document.getElementById("tab-m1");
       const btnM2 = document.getElementById("tab-m2");
       const btnAll = document.getElementById("tab-all");
+      const btnStrat = document.getElementById("tab-strat");
 
       if (btnM1) btnM1.className = isM1 ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-sky-600 text-white shadow-sm border border-sky-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
       if (btnM2) btnM2.className = isM2 ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-purple-600 text-white shadow-sm border border-purple-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
       if (btnAll) btnAll.className = isAll ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-emerald-600 text-white shadow-sm border border-emerald-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
+      if (btnStrat) btnStrat.className = isStrat ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-indigo-600 text-white shadow-sm border border-indigo-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
+
+      const mainViews = document.getElementById("main-trading-views");
+      const stratView = document.getElementById("strategy-catalog-view");
+      if (mainViews && stratView) {
+        if (isStrat) {
+          mainViews.classList.add("hidden");
+          stratView.classList.remove("hidden");
+          loadAndRenderStrategies();
+          return;
+        } else {
+          mainViews.classList.remove("hidden");
+          stratView.classList.add("hidden");
+        }
+      }
 
       // Synchronize trade filter dropdown
       const modelDropdown = document.getElementById("model-filter");
-      if (modelDropdown) {
+      if (modelDropdown && !isStrat) {
         modelDropdown.value = m;
       }
 
@@ -1013,6 +1108,142 @@ HTML_CONTENT = """<!DOCTYPE html>
         updateView();
       }
     }
+
+    async function loadAndRenderStrategies() {
+      if (!strategiesData) {
+        try {
+          const res = await fetch("/api/strategies");
+          const json = await res.json();
+          strategiesData = json.strategies || [];
+        } catch (e) {
+          console.error("Failed to fetch strategies:", e);
+        }
+      }
+      renderStrategies();
+    }
+
+    function renderStrategies() {
+      const container = document.getElementById("strategy-cards-container");
+      if (!container || !strategiesData) return;
+
+      const q = (document.getElementById("strat-search")?.value || "").toLowerCase();
+      const statusFilter = document.getElementById("strat-filter-status")?.value || "ALL";
+      const assetFilter = document.getElementById("strat-filter-asset")?.value || "ALL";
+
+      let filtered = strategiesData.filter(s => {
+        if (statusFilter !== "ALL" && s.status !== statusFilter) return false;
+        if (assetFilter !== "ALL" && !s.supported_assets.includes(assetFilter)) return false;
+        if (q) {
+          const haystack = `${s.id} ${s.name} ${s.short_desc} ${s.category} ${s.supported_assets.join(' ')} ${s.notes_and_caveats}`.toLowerCase();
+          if (!haystack.includes(q)) return false;
+        }
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        container.innerHTML = `<div class="p-8 text-center text-gray-500 text-sm">No strategies matching your search criteria.</div>`;
+        return;
+      }
+
+      const statusBadges = {
+        ACTIVE_PRODUCTION: { label: "🟢 ACTIVE PRODUCTION", class: "bg-sky-950 text-sky-400 border border-sky-800" },
+        ACTIVE_YIELD_A: { label: "🏛️ ACTIVE YIELD A", class: "bg-purple-950 text-purple-400 border border-purple-800" },
+        BENCHMARKED_READY: { label: "🔥 BENCHMARKED READY (>54% WR)", class: "bg-emerald-950 text-emerald-400 border border-emerald-800" },
+        STAGED_FOR_ACTIVATION: { label: "⏳ STAGED FOR ACTIVATION", class: "bg-amber-950 text-amber-400 border border-amber-800" },
+        RESEARCH_BENCHMARKED: { label: "🔬 RESEARCH BENCHMARKED", class: "bg-slate-900 text-slate-400 border border-slate-700" },
+        DISQUALIFIED: { label: "❌ DISQUALIFIED (NEGATIVE DRIFT)", class: "bg-rose-950 text-rose-400 border border-rose-800" },
+      };
+
+      container.innerHTML = filtered.map(s => {
+        const badge = statusBadges[s.status] || { label: s.status, class: "bg-gray-800 text-gray-400 border border-gray-700" };
+        
+        let rulesHtml = "";
+        for (const [k, v] of Object.entries(s.technical_rules || {})) {
+          rulesHtml += `<div class="text-xs text-gray-300"><span class="text-gray-500 font-medium">${k.replace(/_/g, ' ').toUpperCase()}:</span> ${v}</div>`;
+        }
+
+        let mlHtml = "";
+        for (const [k, v] of Object.entries(s.ml_parameters || {})) {
+          mlHtml += `<div class="text-xs text-gray-300"><span class="text-gray-500 font-medium">${k.replace(/_/g, ' ').toUpperCase()}:</span> ${v}</div>`;
+        }
+
+        let benchHtml = "";
+        if (s.benchmark_metrics && s.benchmark_metrics["3_year_results"]) {
+          const rows = Object.entries(s.benchmark_metrics["3_year_results"]).map(([k, m]) => `
+            <tr class="border-b border-gray-800 text-xs">
+              <td class="py-1 px-2 font-bold text-gray-200">${k}</td>
+              <td class="py-1 px-2 text-right font-mono">${m.trades || '—'}</td>
+              <td class="py-1 px-2 text-right font-mono font-bold ${(m.win_rate_pct||0) >= 54 ? 'text-emerald-400' : 'text-gray-300'}">${m.win_rate_pct || 0}%</td>
+              <td class="py-1 px-2 text-right font-mono font-bold">${m.profit_factor || 0}</td>
+              <td class="py-1 px-2 text-right font-mono">${m.payoff_ratio || 0}R</td>
+              <td class="py-1 px-2 text-right font-mono font-bold ${(m.net_pnl_usd||0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}">$${Math.round(m.net_pnl_usd||0).toLocaleString()}</td>
+              <td class="py-1 px-2 text-right font-mono text-rose-400">-$${Math.round(m.max_dd_usd||0).toLocaleString()}</td>
+            </tr>
+          `).join("");
+
+          benchHtml = `
+            <div class="mt-3 overflow-x-auto">
+              <table class="w-full text-left">
+                <thead>
+                  <tr class="text-[10px] uppercase text-gray-500 border-b border-gray-800">
+                    <th class="py-1 px-2">Asset / Variant</th>
+                    <th class="py-1 px-2 text-right">Trades (3Y)</th>
+                    <th class="py-1 px-2 text-right">Win Rate</th>
+                    <th class="py-1 px-2 text-right">PF</th>
+                    <th class="py-1 px-2 text-right">Payoff</th>
+                    <th class="py-1 px-2 text-right">Net Realized</th>
+                    <th class="py-1 px-2 text-right">Max DD</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="metric-card space-y-3">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-gray-800">
+              <div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <h3 class="text-base font-bold text-white">${s.name}</h3>
+                  <span class="px-2 py-0.5 rounded text-[10px] font-bold ${badge.class}">${badge.label}</span>
+                </div>
+                <p class="text-xs text-gray-400 mt-1">${s.short_desc}</p>
+              </div>
+              <div class="flex flex-wrap items-center gap-2 text-xs font-mono">
+                <span class="bg-gray-800 px-2 py-1 rounded text-gray-300">Assets: <b>${s.supported_assets.join(", ")}</b></span>
+                <span class="bg-gray-800 px-2 py-1 rounded text-gray-300">Risk: <b>$${s.default_risk_usd.toFixed(2)}</b></span>
+                <span class="bg-gray-800 px-2 py-1 rounded text-emerald-400 font-bold">Target WR: <b>${s.target_win_rate_pct.toFixed(1)}%</b></span>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div class="bg-gray-900/60 p-3 rounded-lg border border-gray-800 space-y-1.5">
+                <div class="text-[11px] font-bold uppercase text-gray-400 mb-1">Execution Blueprint</div>
+                ${rulesHtml}
+                ${mlHtml ? `<div class="text-[11px] font-bold uppercase text-gray-400 mt-2 mb-1">ML Meta-Labeler</div>${mlHtml}` : ''}
+              </div>
+              <div class="bg-gray-900/60 p-3 rounded-lg border border-gray-800">
+                <div class="text-[11px] font-bold uppercase text-gray-400 mb-1">Audited Quantitative Benchmark</div>
+                ${benchHtml || '<div class="text-xs text-gray-500 py-4">No 3Y breakdown attached</div>'}
+                <div class="mt-3 pt-2 border-t border-gray-800">
+                  <div class="text-[10px] text-gray-500 uppercase font-bold mb-1">Daemon Activation CLI</div>
+                  <pre class="bg-black/60 p-2 rounded text-[11px] font-mono text-emerald-300 overflow-x-auto select-all">${s.cli_activation_command || '# No standalone CLI command'}</pre>
+                </div>
+              </div>
+            </div>
+
+            ${s.notes_and_caveats ? `
+              <div class="p-2.5 rounded bg-amber-950/20 border-l-4 border-amber-500 text-xs text-amber-200">
+                <b>⚠️ Operational Safeguard:</b> ${s.notes_and_caveats}
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join("");
+    }
+
 
     function onFilterChange() {
       const modelDropdown = document.getElementById("model-filter");

@@ -1,8 +1,23 @@
 import os
+import sys
 from datetime import datetime, timezone
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+try:
+    from gold_trader.core.strategy_catalog import (
+        STRATEGY_CATALOG,
+        StrategyProfile,
+        StrategyStatus,
+        RiskArchetype,
+        get_strategy_catalog,
+        list_strategies,
+    )
+except ImportError:
+    STRATEGY_CATALOG = {}
+
 
 st.set_page_config(
     page_title="Aegis Alpha | Multi-Model Quantitative Portfolio",
@@ -328,10 +343,11 @@ chart_range = st.sidebar.selectbox("P&L Chart Range", ["Last 6 months", "Year to
 # ==============================================================================
 # MAIN TABS: 100% CLEAN SEGREGATION
 # ==============================================================================
-tab_m1, tab_m2, tab_all = st.tabs([
+tab_m1, tab_m2, tab_all, tab_strategies = st.tabs([
     "🛡️ Model 1: Production Baseline",
     "⚡ Model 2: Profile A Yield Engine",
     "🌐 Consolidated Portfolio Overview",
+    "📚 Strategy Library & Research Vault",
 ])
 
 # ------------------------------------------------------------------------------
@@ -461,6 +477,135 @@ with tab_all:
 
     st.divider()
     render_trades_table(all_trades, "all")
+
+
+# ------------------------------------------------------------------------------
+# TAB 4: STRATEGY LIBRARY & RESEARCH VAULT
+# ------------------------------------------------------------------------------
+with tab_strategies:
+    st.markdown("""
+    <div style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.35); border-radius: 12px; padding: 12px 18px; margin-bottom: 16px;">
+        <span style="font-weight: 700; color: #818cf8; font-size: 1.05rem;">📚 Aegis Alpha Strategy Catalog & Quantitative Architecture Repository</span>
+        <span style="float: right; font-size: 0.75rem; background: rgba(99, 102, 241, 0.2); color: #818cf8; padding: 3px 10px; border-radius: 999px; font-weight: 700;">PERSISTENT VAULT</span>
+        <p style="font-size: 0.82rem; color: #9ca3af; margin: 4px 0 0 0;">
+            Permanent system memory storing all production, staged, benchmarked, and research trading strategies with audited 3Y & 5Y backtests, full algorithmic entry/exit rules, and CLI activation commands for future reference.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    catalog_dict = STRATEGY_CATALOG if STRATEGY_CATALOG else {}
+    all_strats = list(catalog_dict.values())
+
+    s_total = len(all_strats)
+    s_active = sum(1 for s in all_strats if s.status in (StrategyStatus.ACTIVE_PRODUCTION, StrategyStatus.ACTIVE_YIELD_A))
+    s_high_wr = sum(1 for s in all_strats if s.target_win_rate_pct >= 54.0 and s.status != StrategyStatus.DISQUALIFIED)
+    s_staged = sum(1 for s in all_strats if s.status == StrategyStatus.STAGED_FOR_ACTIVATION)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Cataloged Strategies", f"{s_total} Total")
+    m2.metric("Active Live Engines", f"{s_active} Live (M1 + M2)")
+    m3.metric("High Win-Rate Candidates (>54%)", f"{s_high_wr} Ready")
+    m4.metric("Staged for Activation", f"{s_staged} Staged")
+
+    st.divider()
+
+    col_search, col_status, col_asset = st.columns([2, 1, 1])
+    search_query = col_search.text_input("🔍 Search strategies by name, rule, or indicator...", value="", placeholder="e.g. Donchian, ML, Overlap, SuperTrend...")
+    sel_status = col_status.selectbox("Filter Status", ["All Statuses", "ACTIVE_PRODUCTION", "ACTIVE_YIELD_A", "BENCHMARKED_READY", "STAGED_FOR_ACTIVATION", "RESEARCH_BENCHMARKED", "DISQUALIFIED"])
+    sel_asset = col_asset.selectbox("Filter Asset", ["All Assets", "XAUUSD", "BTCUSD", "ETHUSD"])
+
+    filtered_strats = []
+    for s in all_strats:
+        if sel_status != "All Statuses" and s.status.value != sel_status:
+            continue
+        if sel_asset != "All Assets" and sel_asset not in s.supported_assets:
+            continue
+        if search_query:
+            q = search_query.lower()
+            text_corpus = f"{s.id} {s.name} {s.short_desc} {s.category} {' '.join(s.supported_assets)} {s.notes_and_caveats}".lower()
+            if q not in text_corpus:
+                continue
+        filtered_strats.append(s)
+
+    st.caption(f"Displaying {len(filtered_strats)} of {s_total} stored strategies")
+
+    status_badges = {
+        StrategyStatus.ACTIVE_PRODUCTION: ("🟢 ACTIVE PRODUCTION", "background:rgba(14,165,233,0.18); color:#38bdf8; border:1px solid rgba(14,165,233,0.4);"),
+        StrategyStatus.ACTIVE_YIELD_A: ("🏛️ ACTIVE YIELD A", "background:rgba(168,85,247,0.18); color:#c084fc; border:1px solid rgba(168,85,247,0.4);"),
+        StrategyStatus.BENCHMARKED_READY: ("🔥 BENCHMARKED READY (>54% WR)", "background:rgba(34,197,94,0.18); color:#22c55e; border:1px solid rgba(34,197,94,0.4);"),
+        StrategyStatus.STAGED_FOR_ACTIVATION: ("⏳ STAGED FOR ACTIVATION", "background:rgba(234,179,8,0.18); color:#eab308; border:1px solid rgba(234,179,8,0.4);"),
+        StrategyStatus.RESEARCH_BENCHMARKED: ("🔬 RESEARCH BENCHMARKED", "background:rgba(148,163,184,0.15); color:#94a3b8; border:1px solid rgba(148,163,184,0.3);"),
+        StrategyStatus.DISQUALIFIED: ("❌ DISQUALIFIED (NEGATIVE DRIFT)", "background:rgba(239,68,68,0.18); color:#ef4444; border:1px solid rgba(239,68,68,0.4);"),
+    }
+
+    for s in filtered_strats:
+        badge_text, badge_style = status_badges.get(s.status, ("UNKNOWN", ""))
+        expander_title = f"{badge_text.split()[0]} [{s.status.value}] {s.name} — {' / '.join(s.supported_assets)} (Target WR: {s.target_win_rate_pct:.1f}%)"
+
+        with st.expander(expander_title, expanded=(s.status in (StrategyStatus.ACTIVE_PRODUCTION, StrategyStatus.BENCHMARKED_READY))):
+            st.markdown(f"""
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-size:0.85rem; font-weight:700; padding:3px 10px; border-radius:999px; {badge_style}">{badge_text}</span>
+                <span style="font-size:0.8rem; color:#9ca3af;">Category: <b>{s.category}</b> · Risk Model: <b>{s.risk_archetype.value}</b> · Default: <b>${s.default_risk_usd:.2f}</b> · Timeframe: <b>{s.timeframe}</b></span>
+            </div>
+            <p style="font-size:0.92rem; color:#d1d5db; margin-bottom:12px;">{s.short_desc}</p>
+            """, unsafe_allow_html=True)
+
+            subtab1, subtab2, subtab3 = st.tabs(["⚙️ Technical Execution Blueprint", "📊 Audited Track Record", "💻 CLI Runbook & Activation"])
+
+            with subtab1:
+                col_rules1, col_rules2 = st.columns(2)
+                with col_rules1:
+                    st.markdown("##### Core Entry & Confirmation Rules")
+                    for r_k, r_v in list(s.technical_rules.items())[:len(s.technical_rules)//2 + 1]:
+                        st.markdown(f"- **{r_k.replace('_', ' ').title()}:** `{r_v}`")
+                with col_rules2:
+                    st.markdown("##### Exits, Stops & ML Configuration")
+                    for r_k, r_v in list(s.technical_rules.items())[len(s.technical_rules)//2 + 1:]:
+                        st.markdown(f"- **{r_k.replace('_', ' ').title()}:** `{r_v}`")
+                    if s.ml_parameters:
+                        st.markdown("##### Machine Learning Meta-Labeler")
+                        for m_k, m_v in s.ml_parameters.items():
+                            st.markdown(f"- **{m_k.replace('_', ' ').title()}:** `{m_v}`")
+
+            with subtab2:
+                if s.benchmark_metrics:
+                    if "3_year_results" in s.benchmark_metrics:
+                        st.markdown("##### 3-Year Audited Out-of-Sample Performance (Oct 2023 – Oct 2026)")
+                        rows_3y = []
+                        for sym, m in s.benchmark_metrics["3_year_results"].items():
+                            rows_3y.append({
+                                "Asset / Variation": sym,
+                                "Trades": m.get("trades", 0),
+                                "Win Rate": f"{m.get('win_rate_pct', 0.0):.1f}%",
+                                "Profit Factor": f"{m.get('profit_factor', 0.0):.2f}",
+                                "Payoff Ratio": f"{m.get('payoff_ratio', 0.0):.2f}R",
+                                "Net Realized P&L": f"${m.get('net_pnl_usd', 0.0):,.2f}",
+                                "Max Drawdown": f"-${m.get('max_dd_usd', 0.0):,.2f}",
+                            })
+                        st.dataframe(pd.DataFrame(rows_3y), use_container_width=True, hide_index=True)
+                    if "5_year_portfolio" in s.benchmark_metrics:
+                        st.markdown("##### 5-Year Master Portfolio Track Record")
+                        st.json(s.benchmark_metrics["5_year_portfolio"])
+                    if "monte_carlo_audit" in s.benchmark_metrics:
+                        st.markdown("##### Monte Carlo Stress Test (60,000 Iterations)")
+                        st.json(s.benchmark_metrics["monte_carlo_audit"])
+                    if "6_month_gold_benchmark" in s.benchmark_metrics:
+                        st.markdown("##### 6-Month Benchmarking Results")
+                        st.json(s.benchmark_metrics["6_month_gold_benchmark"])
+                else:
+                    st.info("No quantitative benchmark metrics attached.")
+
+            with subtab3:
+                st.markdown("##### Daemon Activation Command")
+                st.code(s.cli_activation_command or "# No standalone CLI command", language="bash")
+                if s.notes_and_caveats:
+                    st.markdown(f"""
+                    <div style="background:rgba(234,179,8,0.08); border-left:4px solid #eab308; padding:8px 12px; border-radius:4px; font-size:0.85rem; color:#fef08a; margin-top:8px;">
+                        <b>⚠️ Operational Note & Risk Safeguard:</b> {s.notes_and_caveats}
+                    </div>
+                    """, unsafe_allow_html=True)
+
 
 # ---- Global Health Checklist ----
 st.divider()

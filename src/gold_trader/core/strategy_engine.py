@@ -1096,3 +1096,22 @@ def generate_compounding_ladder_setup(
         "ladder_status": ladder_status,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ==============================================================================
+# Persistent Strategy Catalog & Repository Integration
+# ==============================================================================
+from gold_trader.core.strategy_catalog import (
+    STRATEGY_CATALOG,
+    StrategyProfile,
+    StrategyStatus,
+    RiskArchetype,
+    get_strategy_catalog,
+    get_strategy,
+    list_strategies,
+    get_active_strategies,
+    get_high_winrate_candidates,
+    get_catalog_summary_table,
+    export_catalog_json,
+)
+

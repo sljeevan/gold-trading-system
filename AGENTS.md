@@ -542,7 +542,48 @@ tail -f yield_a_eth_auto_trader.log
 ```
 
 ---
+
+## 14. Persistent Strategy Catalog & Quantitative Architecture Repository
+
+The system incorporates a dedicated, persistent strategy repository in [`src/gold_trader/core/strategy_catalog.py`](file:///home/mcpuser/MCP/gold-trading-system/src/gold_trader/core/strategy_catalog.py) storing all production, staged, benchmarked, and research strategies with full execution blueprints, audited track records, and operational runbook commands for future reference.
+
+### 14.1 Core Architecture & Modules
+- **Core Module**: [`src/gold_trader/core/strategy_catalog.py`](file:///home/mcpuser/MCP/gold-trading-system/src/gold_trader/core/strategy_catalog.py)
+- **Engine Accessor Hook**: [`src/gold_trader/core/strategy_engine.py`](file:///home/mcpuser/MCP/gold-trading-system/src/gold_trader/core/strategy_engine.py) (`get_strategy_catalog`, `get_strategy`, `list_strategies`)
+- **FastAPI Endpoint**: `GET /api/strategies` in [`src/gold_trader/api/dashboard_api.py`](file:///home/mcpuser/MCP/gold-trading-system/src/gold_trader/api/dashboard_api.py)
+- **UI Views**:
+  - Streamlit Tab: **"📚 Strategy Library & Research Vault"** in [`atlas_trading_dashboard/app.py`](file:///home/mcpuser/MCP/gold-trading-system/atlas_trading_dashboard/app.py)
+  - Web UI Tab: **"📚 Strategy Library & Vault"** on port 8787 / 8080
+
+### 14.2 Stored Strategies Master Matrix
+| ID | Strategy Name | Status | Assets | Risk Model | Target WR | 3-Year Audited Key Metrics |
+| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
+| `prod_flat_risk_touch` | **Model 1 Production Baseline** | `ACTIVE_PRODUCTION` | XAU, BTC, ETH | Flat $75.44 | 52.0% | Gold: 52.2% WR, 1.15 PF, +$12.7K P&L<br/>BTC: 50.8% WR, 1.10 PF, +$17.9K P&L<br/>ETH: 52.0% WR, 1.28 PF, +$46.2K P&L |
+| `profile_a_yield_engine` | **Model 2 Profile A Crypto Yield** | `ACTIVE_YIELD_A` | BTC, ETH | Flat $75.00 | 54.5% | BTC: 54.0% WR, 1.34 PF, +$20.3K (Max DD: -$366)<br/>ETH: 55.2% WR, 1.49 PF, +$50.6K (Max DD: -$980) |
+| `high_conviction_ml_touch`| **High-Conviction ML (Tight TSL)** | `BENCHMARKED_READY` | ETH, BTC, XAU | Flat $75.44 | **55.4%** | ETH (P>=0.55): **55.4% WR**, 1.53 PF, +$20.6K (Max DD: -$1,508)<br/>BTC: 51.6%–54.0% WR, 1.23–1.34 PF<br/>Gold: 51.4% WR, 1.17 PF |
+| `gold_london_ny_overlap` | **London/NY Overlap Filter (Gold)** | `BENCHMARKED_READY` | XAUUSD | Flat $75.44 | 53.7% | Gold (12–16 UTC): **53.7% WR**, 1.31 PF, 1.14R Payoff, +$8,852 P&L (Max DD: -$1,842) |
+| `noise_adaptive_ladder_staged`| **37-Step Noise-Adaptive Ladder** | `STAGED_FOR_ACTIVATION` | XAUUSD | Compounding | 53.0% | 60,000 Monte Carlo runs: 100% completion rate ($100 ➔ $5,337) with ratchet floors |
+| `fast_1r_no_runner` | **Single-Stage 1.0R Fast Target** | `RESEARCH_BENCHMARKED` | XAU, BTC, ETH | Single TP | 52.0% | 51.8%–52.2% WR, but spread reduces payoff to 0.90R–0.93R (Net -$2.3K on Gold) |
+| `smc_asian_sweep_judas` | **SMC Asian Liquidity Sweep** | `RESEARCH_BENCHMARKED` | XAU, BTC | Flat $75.44 | 48.0% | Low frequency (33–72 trades/3Y), sub-48% WR; false breakouts often trend |
+| `ema_value_zone_pullback`| **EMA 9/21 Value Zone Pullback** | `DISQUALIFIED` | XAU, BTC, ETH | Flat $75.44 | 45.0% | Failed on all assets (44.8%–45.6% WR, -$5K to -$16K); EMA dips turn to reversals |
+| `supertrend_200ema_swing` | **SuperTrend (10, 3.0) + 200 EMA** | `RESEARCH_BENCHMARKED` | XAU, BTC | Flat $75.44 | 53.0% | Lowest non-ML DD (<4.5%), 52.9% WR, 1.33 PF, lower frequency (~8–10 trades/mo) |
+
+### 14.3 Fast Programmatic API Usage
+```python
+# 1. Access the entire catalog
+from gold_trader.core.strategy_catalog import get_strategy_catalog, list_strategies, StrategyStatus
+catalog = get_strategy_catalog()
+
+# 2. Filter high win-rate strategies
+high_wr = [s for s in catalog.values() if s.target_win_rate_pct >= 54.0]
+
+# 3. Query via REST API
+# curl http://127.0.0.1:8787/api/strategies
+```
+
+---
 *Maintained by Antigravity Agentic Pair Programmer for Aegis Alpha.*
+
 
 
 
