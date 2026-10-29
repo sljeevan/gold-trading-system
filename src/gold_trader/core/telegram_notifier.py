@@ -75,13 +75,32 @@ class TelegramNotifier:
         lots = float(order.get("lots", setup.get("suggested_lot_size", 0.01)))
         price = float(order.get("price", setup.get("entry_price", 0.0)))
         ticket = str(order.get("ticket", "N/A"))
-        sl = setup.get("stop_loss", order.get("sl"))
-        tp1 = setup.get("target_1", order.get("tp"))
-        tp2 = setup.get("target_2")
-        rr = setup.get("risk_reward_t1", 1.5)
-        score = setup.get("quality_score", 85)
+        sl_raw = order.get("sl") if order.get("sl") is not None else setup.get("stop_loss")
+        tp1_raw = order.get("tp") if order.get("tp") is not None else (setup.get("target_1") or setup.get("take_profit"))
+        tp2_raw = setup.get("target_2") or order.get("target_2")
+
+        sl_str = f"${float(sl_raw):.2f}" if sl_raw is not None and str(sl_raw).replace('.', '', 1).isdigit() else (str(sl_raw) if sl_raw else "Open")
+        tp1_str = f"${float(tp1_raw):.2f}" if tp1_raw is not None and str(tp1_raw).replace('.', '', 1).isdigit() else (str(tp1_raw) if tp1_raw else "Open")
+
+        rr = setup.get("reward_risk_ratio") or setup.get("risk_reward_t1") or setup.get("rr_ratio")
+        if (not rr or rr == 1.5) and price and sl_raw and tp1_raw:
+            try:
+                sl_f = float(sl_raw)
+                tp1_f = float(tp1_raw)
+                risk_d = abs(price - sl_f)
+                reward_d = abs(price - tp1_f)
+                if risk_d > 0:
+                    rr = round(reward_d / risk_d, 2)
+            except (ValueError, TypeError):
+                pass
+        rr = float(rr or 1.25)
+
+        score = setup.get("quality_score") or setup.get("setup_details", {}).get("quality_score", 95)
         setup_name = html.escape(str(setup.get("setup_name", "Institutional Confluence")))
-        reasons = setup.get("reasons", [])
+        reasons = setup.get("reasons") or setup.get("setup_details", {}).get("reasons", [])
+
+        ml_eval = setup.get("ml_evaluation") or setup.get("ml_filter") or {}
+        win_prob = setup.get("win_probability") or ml_eval.get("probability_win")
 
         is_btc = "BTC" in symbol.upper()
         is_eth = "ETH" in symbol.upper()
@@ -99,13 +118,27 @@ class TelegramNotifier:
             f"🎫 <b>Ticket:</b> <code>#{ticket}</code>\n"
             f"📦 <b>Volume:</b> <code>{lots:.2f} lots</code>\n"
             f"💵 <b>Entry Price:</b> <code>${price:.2f}</code>\n\n"
-            f"🎯 <b>Take-Profit 1 (1.5R):</b> <code>${tp1 if tp1 else 'Open'}</code>\n"
-            f"🎯 <b>Take-Profit 2 (3.0R):</b> <code>${tp2 if tp2 else 'Open'}</code>\n"
-            f"🛑 <b>Stop-Loss:</b> <code>${sl if sl else 'Open'}</code>\n"
-            f"⚖️ <b>Risk-to-Reward:</b> <code>{rr:.2f}R</code>\n"
-            f"⭐ <b>Quality Score:</b> <code>{score}/100</code>\n\n"
-            f"🧠 <b>Strategy Setup:</b> {setup_name}\n"
+            f"🛑 <b>Stop-Loss:</b> <code>{sl_str}</code>\n"
+            f"🎯 <b>Take-Profit ({rr:.2f}R):</b> <code>{tp1_str}</code>\n"
         )
+
+        if tp2_raw is not None and tp2_raw != tp1_raw:
+            try:
+                tp2_val = float(tp2_raw)
+                if tp2_val > 0:
+                    msg += f"🎯 <b>Take-Profit 2 (Runner):</b> <code>${tp2_val:.2f}</code>\n"
+            except (ValueError, TypeError):
+                pass
+
+        msg += (
+            f"⚖️ <b>Risk-to-Reward:</b> <code>{rr:.2f}R</code>\n"
+            f"⭐ <b>Quality Score:</b> <code>{score}/100</code>\n"
+        )
+
+        if win_prob is not None:
+            msg += f"🤖 <b>ML Win Probability:</b> <code>{float(win_prob):.1%}</code> (Conviction Gate)\n"
+
+        msg += f"\n🧠 <b>Strategy Setup:</b> {setup_name}\n"
 
         if reasons:
             msg += f"<b>Rationale:</b>\n"
