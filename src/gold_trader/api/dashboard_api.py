@@ -727,7 +727,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         🛡️ Model 1: Production Baseline (Gold · BTC · ETH)
       </button>
       <button onclick="setActiveModelView('model_2')" id="tab-m2" class="px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700">
-        ⚡ Model 2: Profile A Yield (BTC · ETH · Harvest)
+        ⚡ Model 2: Profile A Yield (BTC · ETH)
       </button>
       <button onclick="setActiveModelView('ALL')" id="tab-all" class="px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700">
         🌐 Consolidated Portfolio Overview
@@ -736,48 +736,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div class="text-xs text-gray-400 flex items-center gap-2 px-2">
       <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
       <span id="model-status-indicator">Both Engines Active on MT5</span>
-    </div>
-  </div>
-
-  <!-- Model 2 Treasury Harvest Widget (Hidden when Model 1 is active) -->
-  <div id="treasury-card" class="bg-gradient-to-r from-purple-950/40 via-gray-900/90 to-purple-950/40 border border-purple-500/30 rounded-xl p-4 my-4 shadow-lg" style="display: none;">
-    <div class="flex flex-col md:flex-row md:items-center justify-between pb-3 border-b border-purple-500/20 gap-3">
-      <div class="flex items-center gap-2.5">
-        <span class="px-2.5 py-1 rounded-full text-xs font-bold bg-purple-900/60 text-purple-300 border border-purple-600/50 flex items-center gap-1.5">
-          <span>🏛️</span> MODEL 2 TREASURY HARVEST
-        </span>
-        <span class="text-xs text-gray-300">Monthly Watermark Rule: Harvest 100% of profits above Anchor Seed; replenish if deficit.</span>
-      </div>
-      <div id="treasury-status-badge" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-purple-950 text-purple-300 border border-purple-800">
-        BASELINE SECURED ($1,500.00)
-      </div>
-    </div>
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3 text-center">
-      <div class="bg-gray-900/60 p-2.5 rounded-lg border border-gray-800">
-        <div class="text-[11px] text-gray-400 uppercase tracking-wider">Anchor Capital Seed</div>
-        <div class="flex items-center justify-center gap-1 mt-1">
-          <span class="text-gray-400 text-sm">$</span>
-          <input type="number" id="input-anchor-seed" value="1500" step="50" min="100" 
-                 class="bg-gray-800 text-white font-bold text-lg font-mono rounded px-2 py-0.5 w-28 text-center border border-gray-700 focus:border-purple-500 focus:outline-none"
-                 oninput="onAnchorSeedChange(this.value)" />
-        </div>
-        <div class="text-[10px] text-purple-400 mt-0.5">Editable Seed Input</div>
-      </div>
-      <div class="bg-gray-900/60 p-2.5 rounded-lg border border-gray-800">
-        <div class="text-[11px] text-gray-400 uppercase tracking-wider">Current Month P&L</div>
-        <div id="treasury-month-pnl" class="text-xl font-bold text-emerald-400 font-mono mt-0.5">+$0.00</div>
-        <div class="text-[10px] text-gray-500">October 2026 Engine P&L</div>
-      </div>
-      <div class="bg-purple-950/40 p-2.5 rounded-lg border border-purple-500/30">
-        <div class="text-[11px] text-purple-300 uppercase tracking-wider font-semibold">Ready to Harvest Cash</div>
-        <div id="treasury-surplus" class="text-xl font-bold text-emerald-400 font-mono mt-0.5">$0.00</div>
-        <div class="text-[10px] text-purple-400/80">Surplus above Anchor Seed</div>
-      </div>
-      <div class="bg-gray-900/60 p-2.5 rounded-lg border border-gray-800">
-        <div class="text-[11px] text-gray-400 uppercase tracking-wider">Deficit Top-Up Needed</div>
-        <div id="treasury-deficit" class="text-xl font-bold text-gray-300 font-mono mt-0.5">$0.00</div>
-        <div class="text-[10px] text-gray-500">Replenishment required</div>
-      </div>
     </div>
   </div>
 
@@ -970,7 +928,6 @@ HTML_CONTENT = """<!DOCTYPE html>
   <script>
     let globalData = null;
     let activeModelView = "model_1"; // Default to Model 1 tab
-    let customAnchorSeed = parseFloat(localStorage.getItem("aegis_anchor_seed") || "1500");
     let showClosed = true;
     let tradesCurrentPage = 1;
     let tradesPageSize = 10;
@@ -998,17 +955,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       initAudioUI();
       if (audioAlertsEnabled) {
         playChime();
-      }
-    }
-
-    function onAnchorSeedChange(val) {
-      const num = parseFloat(val);
-      if (!isNaN(num) && num > 0) {
-        customAnchorSeed = num;
-        localStorage.setItem("aegis_anchor_seed", num.toString());
-        if (globalData && globalData.treasury_model_2) {
-          renderTreasuryWidget(globalData.treasury_model_2);
-        }
       }
     }
 
@@ -1205,42 +1151,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       document.getElementById("stat-expectancy").innerText = `${parseFloat(expectancy) >= 0 ? '+' : ''}$${expectancy}`;
       document.getElementById("stat-expectancy").className = `text-xl font-bold mt-0.5 ${parseFloat(expectancy) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
       document.getElementById("stat-max-dd").innerText = `-$${maxDD.toFixed(2)}`;
-    }
-
-    function renderTreasuryWidget(treasury) {
-      if (!treasury) return;
-      const anchorInput = document.getElementById("input-anchor-seed");
-      if (anchorInput && document.activeElement !== anchorInput) {
-        anchorInput.value = customAnchorSeed;
-      }
-      
-      const anchor = customAnchorSeed || parseFloat(treasury.anchor_capital || 1500.0);
-      const equity = parseFloat(treasury.current_month_equity || 0);
-      const monthPnl = parseFloat(treasury.current_month_pnl || 0);
-
-      // Determine effective equity vs anchor seed
-      const effectiveEquity = equity > 0 ? equity : (anchor + monthPnl);
-      const surplus = Math.max(0, Math.round((effectiveEquity - anchor) * 100) / 100);
-      const deficit = Math.max(0, Math.round((anchor - effectiveEquity) * 100) / 100);
-
-      document.getElementById("treasury-month-pnl").innerText = `${monthPnl >= 0 ? '+' : ''}${formatMoney(monthPnl)}`;
-      document.getElementById("treasury-month-pnl").className = `text-xl font-bold font-mono mt-0.5 ${monthPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
-      document.getElementById("treasury-surplus").innerText = formatMoney(surplus);
-      document.getElementById("treasury-deficit").innerText = formatMoney(deficit);
-
-      const badge = document.getElementById("treasury-status-badge");
-      if (badge) {
-        if (surplus > 0) {
-          badge.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-950 text-emerald-400 border border-emerald-800 animate-pulse";
-          badge.innerText = `READY TO HARVEST (+${formatMoney(surplus)})`;
-        } else if (deficit > 0) {
-          badge.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-950 text-rose-400 border border-rose-800";
-          badge.innerText = `DEFICIT (TOP-UP ${formatMoney(deficit)})`;
-        } else {
-          badge.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-purple-950 text-purple-300 border border-purple-800";
-          badge.innerText = `BASELINE SECURED (${formatMoney(anchor)})`;
-        }
-      }
     }
 
     function renderAssetCards(assets) {
@@ -1652,16 +1562,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       if (!globalData) return;
       const data = globalData;
 
-      // 100% Segregation: Hide Treasury Card in Model 1; Show in Model 2 and Consolidated
-      const treasuryCard = document.getElementById("treasury-card");
-      if (treasuryCard) {
-        if (activeModelView === "model_1") {
-          treasuryCard.style.display = "none";
-        } else {
-          treasuryCard.style.display = "block";
-        }
-      }
-
       // Update KPIs based on activeModelView
       let activeCards = data.assets || [];
       let activeTrades = data.trades || [];
@@ -1729,7 +1629,6 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
 
       computePerformanceKPIs(data.trades);
-      renderTreasuryWidget(data.treasury_model_2);
       renderAssetCards(data.assets);
       renderCharts(data.monthly, data.overall, data.monthly_by_model, data.overall_by_model);
       renderTrades();

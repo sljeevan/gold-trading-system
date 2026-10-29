@@ -383,49 +383,13 @@ with tab_m2:
         <span style="font-weight: 700; color: #c084fc; font-size: 0.95rem;">Model 2: Profile A Crypto Yield Engine (Bitcoin · Ethereum)</span>
         <span style="float: right; font-size: 0.75rem; background: rgba(168, 85, 247, 0.2); color: #c084fc; padding: 3px 10px; border-radius: 999px; font-weight: 700;">PROFILE A YIELD</span>
         <p style="font-size: 0.8rem; color: #9ca3af; margin: 4px 0 0 0;">
-            Execution Policy: Fixed $75.00 Risk · Tight Trailing Stops ($200 BTC / $6 ETH) · ML Meta-Labeling Gate (P ≥ 0.48) · Max 1 Concurrent Position per Asset · Order Tag: YieldA · Monthly Watermark Treasury Harvest
+            Execution Policy: Fixed $75.00 Risk · Tight Trailing Stops ($200 BTC / $6 ETH) · ML Meta-Labeling Gate (P ≥ 0.48) · Max 1 Concurrent Position per Asset · Order Tag: YieldA · 24/7 Crypto Execution
         </p>
     </div>
     """, unsafe_allow_html=True)
 
-    # Interactive Anchor Capital Seed Input
-    t_anchor_col, t_calc_col = st.columns([1, 3])
-    with t_anchor_col:
-        anchor_seed_input = st.number_input(
-            "Anchor Capital Seed ($)",
-            min_value=100.0,
-            max_value=100000.0,
-            value=float(st.session_state.get("custom_anchor_seed", treasury_data.get("anchor_capital", 1500.0))),
-            step=100.0,
-            help="Adjustable baseline seed. Realized monthly profits above this amount are ready to withdraw; top-up is needed if below."
-        )
-        st.session_state["custom_anchor_seed"] = anchor_seed_input
-
-    # Dynamic Treasury Harvest Calculations based on user's anchor
     m2_monthly_df = monthly_by_model.get("model_2", pd.DataFrame())
     m2_overall_df = overall_by_model.get("model_2", pd.DataFrame())
-
-    current_month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
-    m2_month_closed = m2_trades[m2_trades["status"] == "CLOSED"] if not m2_trades.empty else pd.DataFrame()
-    if not m2_month_closed.empty and "time" in m2_month_closed.columns:
-        m2_month_closed = m2_month_closed[m2_month_closed["time"].str.startswith(current_month_prefix)]
-        m2_month_pnl = float(m2_month_closed["pnl"].sum())
-    else:
-        m2_month_pnl = float(treasury_data.get("current_month_pnl", 0.0))
-
-    # Calculate actual effective equity against the user's anchor seed
-    acc_m2 = data.get("account_model_2") or {}
-    live_m2_equity = float(acc_m2.get("equity") or acc_m2.get("balance") or 0.0)
-    current_equity = live_m2_equity if live_m2_equity > 0 else (anchor_seed_input + m2_month_pnl)
-
-    harvest_surplus = max(0.0, round(current_equity - anchor_seed_input, 2))
-    deficit_needed = max(0.0, round(anchor_seed_input - current_equity, 2))
-
-    with t_calc_col:
-        t1, t2, t3 = st.columns(3)
-        t1.metric("Current Month P&L", money(m2_month_pnl), delta=f"{m2_month_pnl:+,.2f} USD")
-        t2.metric("Ready to Harvest Cash", money(harvest_surplus), help="Cash profit ready to harvest and withdraw")
-        t3.metric("Deficit Top-Up Needed", money(deficit_needed), help="Capital needed to replenish anchor seed if in drawdown")
 
     m2_open_pnl = sum(float(a.get("unrealized_pnl") or 0) for a in m2_assets)
     m2_today_realized = sum(float(a.get("realized_today") or 0) for a in m2_assets)
@@ -490,7 +454,7 @@ with tab_all:
         st.write(f"- **Assets:** Bitcoin, Ethereum (Order Tag `YieldA`)")
         st.write(f"- **Risk Policy:** $75.00 Fixed Risk · Tight Trailing ($200/$6) · ML Gate P≥0.48")
         st.write(f"- **Realized P&L:** {money(m2_total_realized)}")
-        st.write(f"- **Ready to Harvest Cash:** {money(harvest_surplus)}")
+        st.write(f"- **Open Positions:** {m2_in_trade} / {len(m2_assets)}")
 
     st.divider()
     render_pnl_charts(monthly_all, overall_all, chart_range, "Consolidated Portfolio")
