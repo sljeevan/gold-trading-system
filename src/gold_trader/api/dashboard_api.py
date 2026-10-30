@@ -597,6 +597,56 @@ def get_strategies_catalog(status: Optional[str] = None, asset: Optional[str] = 
     }
 
 
+@app.get("/api/journal/list")
+def get_journal_list():
+    try:
+        from gold_trader.core.daily_journal import DailyJournalEngine
+        engine = DailyJournalEngine()
+        journals = engine.list_journals()
+        return {"status": "SUCCESS", "journals": journals}
+    except Exception as e:
+        logger.error(f"Error listing journals: {e}")
+        return {"status": "ERROR", "error": str(e), "journals": []}
+
+
+@app.get("/api/journal/get")
+def get_journal_entry(date: str):
+    try:
+        from gold_trader.core.daily_journal import DailyJournalEngine
+        engine = DailyJournalEngine()
+        content = engine.get_journal_content(date)
+        journals = engine.list_journals()
+        rec = next((j for j in journals if j["date"] == date), None)
+        return {"status": "SUCCESS", "date": date, "record": rec, "content": content}
+    except Exception as e:
+        logger.error(f"Error fetching journal for {date}: {e}")
+        return {"status": "ERROR", "error": str(e), "content": None, "record": None}
+
+
+@app.post("/api/journal/generate")
+def generate_today_journal():
+    try:
+        from gold_trader.core.daily_journal import DailyJournalEngine
+        engine = DailyJournalEngine()
+        filepath = engine.generate_journal()
+        return {"status": "SUCCESS", "filepath": filepath}
+    except Exception as e:
+        logger.error(f"Error generating journal: {e}")
+        return {"status": "ERROR", "error": str(e)}
+
+
+@app.post("/api/journal/backfill")
+def backfill_all_journals():
+    try:
+        from gold_trader.core.daily_journal import DailyJournalEngine
+        engine = DailyJournalEngine()
+        files = engine.backfill_all()
+        return {"status": "SUCCESS", "count": len(files), "files": files}
+    except Exception as e:
+        logger.error(f"Error backfilling journals: {e}")
+        return {"status": "ERROR", "error": str(e)}
+
+
 
 @app.get("/api/dashboard/overview")
 def get_dashboard_overview():
@@ -699,6 +749,7 @@ HTML_CONTENT = """<!DOCTYPE html>
   <title>Aegis Alpha | Multi-Model Quantitative Portfolio</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     body { background-color: #0e1117; color: #e6e6e6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     .metric-card { background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 12px; padding: 16px; }
@@ -714,6 +765,19 @@ HTML_CONTENT = """<!DOCTYPE html>
     .runner-flight-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
     .badge-m1 { background: rgba(14, 165, 233, 0.15); color: #38bdf8; border: 1px solid rgba(14, 165, 233, 0.4); }
     .badge-m2 { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); }
+    .journal-markdown h1 { font-size: 1.5rem; font-weight: 700; color: #f3f4f6; margin-top: 1.5rem; margin-bottom: 0.75rem; border-bottom: 1px solid #374151; padding-bottom: 0.5rem; }
+    .journal-markdown h2 { font-size: 1.25rem; font-weight: 700; color: #e5e7eb; margin-top: 1.25rem; margin-bottom: 0.5rem; border-bottom: 1px solid #1f2937; padding-bottom: 0.25rem; }
+    .journal-markdown h3 { font-size: 1.1rem; font-weight: 600; color: #d1d5db; margin-top: 1rem; margin-bottom: 0.5rem; }
+    .journal-markdown p { margin-bottom: 0.75rem; line-height: 1.6; color: #9ca3af; font-size: 0.875rem; }
+    .journal-markdown ul, .journal-markdown ol { margin-left: 1.5rem; margin-bottom: 0.75rem; color: #9ca3af; font-size: 0.875rem; list-style-type: disc; }
+    .journal-markdown table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.8rem; background: rgba(17, 24, 39, 0.6); border-radius: 8px; overflow: hidden; }
+    .journal-markdown th { background: #1f2937; color: #9ca3af; text-transform: uppercase; font-size: 0.7rem; font-weight: 700; padding: 8px 12px; text-align: left; border: 1px solid #374151; }
+    .journal-markdown td { padding: 8px 12px; border: 1px solid #374151; color: #e5e7eb; }
+    .journal-markdown blockquote { border-left: 4px solid #10b981; padding-left: 1rem; margin: 1rem 0; color: #d1d5db; background: rgba(16, 185, 129, 0.05); padding-top: 0.5rem; padding-bottom: 0.5rem; border-radius: 0 8px 8px 0; }
+    .journal-markdown code { background: #1f2937; color: #38bdf8; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.8rem; }
+    .journal-markdown pre { background: #111827; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 1rem 0; border: 1px solid #374151; }
+    .journal-markdown pre code { background: transparent; padding: 0; color: #e5e7eb; }
+    .journal-markdown hr { border: 0; border-top: 1px solid #374151; margin: 1.5rem 0; }
   </style>
 </head>
 <body class="p-4 md:p-8 max-w-7xl mx-auto">
@@ -752,6 +816,9 @@ HTML_CONTENT = """<!DOCTYPE html>
       </button>
       <button onclick="setActiveModelView('STRATEGIES')" id="tab-strat" class="px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700">
         📚 Strategy Library & Vault
+      </button>
+      <button onclick="setActiveModelView('JOURNAL')" id="tab-journal" class="px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700">
+        📔 Daily Trading Journal
       </button>
     </div>
     <div class="text-xs text-gray-400 flex items-center gap-2 px-2">
@@ -1000,6 +1067,81 @@ HTML_CONTENT = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Daily Trading Journal View -->
+  <div id="daily-journal-view" class="hidden my-6 space-y-6">
+    <div class="p-5 bg-gradient-to-r from-emerald-950/40 via-teal-950/20 to-gray-900 border border-emerald-500/30 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="text-2xl">📔</span>
+          <h2 class="text-lg font-bold text-emerald-400">Autonomous Daily Trading Journal & Session Post-Mortems</h2>
+        </div>
+        <p class="text-xs text-gray-400 mt-1">Daily multi-asset execution accounting, intraday Donchian/SuperTrend regime telemetry, R-multiple distributions, execution quality audits, and macro catalyst checks.</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <span id="journal-count-badge" class="px-3 py-1.5 rounded-full text-xs font-bold bg-emerald-900/60 text-emerald-300 border border-emerald-700/60">
+          Loading Archives...
+        </span>
+      </div>
+    </div>
+
+    <!-- Journal Controls Bar -->
+    <div class="flex flex-wrap items-center justify-between gap-3 p-3 bg-gray-900/80 border border-gray-800 rounded-xl">
+      <div class="flex items-center gap-3 flex-wrap">
+        <label for="journal-date-select" class="text-xs font-bold text-gray-400 uppercase tracking-wider">Select Session Date:</label>
+        <select id="journal-date-select" onchange="onJournalDateChange()" class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-emerald-500">
+          <option value="">Loading dates...</option>
+        </select>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btn-journal-refresh" onclick="refreshTodayJournal()" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 transition-colors flex items-center gap-1.5 cursor-pointer">
+          <span>🔄</span> Refresh Today
+        </button>
+        <button id="btn-journal-backfill" onclick="backfillAllJournals()" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 transition-colors flex items-center gap-1.5 cursor-pointer">
+          <span>🔁</span> Backfill All Days
+        </button>
+        <button id="btn-journal-download" onclick="downloadCurrentJournal()" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-600 text-white border border-emerald-600 transition-colors flex items-center gap-1.5 cursor-pointer">
+          <span>⬇️</span> Download .md
+        </button>
+      </div>
+    </div>
+
+    <!-- Journal Top Scorecard Metrics -->
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div class="metric-card border border-emerald-500/30">
+        <div class="text-xs font-medium text-emerald-400 uppercase tracking-wider">Session Realized P&L</div>
+        <div id="journal-kpi-pnl" class="text-2xl font-bold text-white mt-1">$0.00</div>
+        <div id="journal-kpi-roi" class="text-xs text-gray-400 mt-0.5">+0.00% ROI</div>
+      </div>
+      <div class="metric-card border border-emerald-500/30">
+        <div class="text-xs font-medium text-emerald-400 uppercase tracking-wider">Net R-Multiple</div>
+        <div id="journal-kpi-r" class="text-2xl font-bold text-white mt-1">+0.00R</div>
+        <div class="text-xs text-gray-400 mt-0.5">Payoff Efficiency</div>
+      </div>
+      <div class="metric-card border border-emerald-500/30">
+        <div class="text-xs font-medium text-emerald-400 uppercase tracking-wider">Trades Closed</div>
+        <div id="journal-kpi-trades" class="text-2xl font-bold text-white mt-1">0</div>
+        <div id="journal-kpi-wl" class="text-xs text-gray-400 mt-0.5">0W / 0L / 0BE</div>
+      </div>
+      <div class="metric-card border border-emerald-500/30">
+        <div class="text-xs font-medium text-emerald-400 uppercase tracking-wider">Session Win Rate</div>
+        <div id="journal-kpi-winrate" class="text-2xl font-bold text-white mt-1">0.0%</div>
+        <div class="text-xs text-gray-400 mt-0.5">Closed Executions</div>
+      </div>
+      <div class="metric-card border border-emerald-500/30">
+        <div class="text-xs font-medium text-emerald-400 uppercase tracking-wider">Profit Factor</div>
+        <div id="journal-kpi-pf" class="text-2xl font-bold text-white mt-1">0.00</div>
+        <div class="text-xs text-gray-400 mt-0.5">Gross Win / Loss</div>
+      </div>
+    </div>
+
+    <!-- Rendered Markdown Journal Content -->
+    <div class="bg-gray-900/60 border border-gray-800 rounded-xl p-6">
+      <div id="journal-markdown-body" class="journal-markdown">
+        <div class="p-8 text-center text-gray-400 text-xs font-mono">Loading Journal Record...</div>
+      </div>
+    </div>
+  </div>
+
 
   <script>
     let globalData = null;
@@ -1071,34 +1213,47 @@ HTML_CONTENT = """<!DOCTYPE html>
       const isM2 = m === "model_2";
       const isAll = m === "ALL";
       const isStrat = m === "STRATEGIES";
+      const isJournal = m === "JOURNAL";
 
       const btnM1 = document.getElementById("tab-m1");
       const btnM2 = document.getElementById("tab-m2");
       const btnAll = document.getElementById("tab-all");
       const btnStrat = document.getElementById("tab-strat");
+      const btnJournal = document.getElementById("tab-journal");
 
       if (btnM1) btnM1.className = isM1 ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-sky-600 text-white shadow-sm border border-sky-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
       if (btnM2) btnM2.className = isM2 ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-purple-600 text-white shadow-sm border border-purple-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
       if (btnAll) btnAll.className = isAll ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-emerald-600 text-white shadow-sm border border-emerald-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
       if (btnStrat) btnStrat.className = isStrat ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-indigo-600 text-white shadow-sm border border-indigo-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
+      if (btnJournal) btnJournal.className = isJournal ? "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-emerald-600 text-white shadow-sm border border-emerald-500" : "px-4 py-2 rounded-lg text-xs font-bold transition-all bg-gray-800 text-gray-300 hover:text-white border border-gray-700";
 
       const mainViews = document.getElementById("main-trading-views");
       const stratView = document.getElementById("strategy-catalog-view");
-      if (mainViews && stratView) {
+      const journalView = document.getElementById("daily-journal-view");
+
+      if (mainViews && stratView && journalView) {
         if (isStrat) {
           mainViews.classList.add("hidden");
           stratView.classList.remove("hidden");
+          journalView.classList.add("hidden");
           loadAndRenderStrategies();
+          return;
+        } else if (isJournal) {
+          mainViews.classList.add("hidden");
+          stratView.classList.add("hidden");
+          journalView.classList.remove("hidden");
+          loadAndRenderJournal();
           return;
         } else {
           mainViews.classList.remove("hidden");
           stratView.classList.add("hidden");
+          journalView.classList.add("hidden");
         }
       }
 
       // Synchronize trade filter dropdown
       const modelDropdown = document.getElementById("model-filter");
-      if (modelDropdown && !isStrat) {
+      if (modelDropdown && !isStrat && !isJournal) {
         modelDropdown.value = m;
       }
 
@@ -1242,6 +1397,177 @@ HTML_CONTENT = """<!DOCTYPE html>
           </div>
         `;
       }).join("");
+    }
+
+    // Daily Trading Journal Functions
+    let journalList = [];
+    let currentJournalDate = null;
+    let currentJournalRawMarkdown = "";
+
+    async function loadAndRenderJournal(targetDate = null) {
+      try {
+        const res = await fetch("/api/journal/list");
+        const json = await res.json();
+        journalList = json.journals || [];
+      } catch (err) {
+        console.error("Error loading journal list:", err);
+      }
+
+      const countBadge = document.getElementById("journal-count-badge");
+      if (countBadge) {
+        countBadge.innerText = `${journalList.length} Sessions Stored`;
+      }
+
+      const select = document.getElementById("journal-date-select");
+      if (!select) return;
+
+      if (journalList.length === 0) {
+        select.innerHTML = '<option value="">No Journals Available</option>';
+        document.getElementById("journal-markdown-body").innerHTML = '<div class="p-8 text-center text-gray-500 text-sm">No daily journal entries found. Click "Refresh Today" or "Backfill All Days" to generate.</div>';
+        return;
+      }
+
+      const selected = targetDate || currentJournalDate || journalList[0].date;
+      currentJournalDate = selected;
+
+      select.innerHTML = journalList.map(j => {
+        const pnl = j.total_pnl >= 0 ? `+$${j.total_pnl.toFixed(2)}` : `-$${Math.abs(j.total_pnl).toFixed(2)}`;
+        const r = `${j.net_r_multiple >= 0 ? '+' : ''}${j.net_r_multiple.toFixed(2)}R`;
+        const isSel = j.date === selected ? 'selected' : '';
+        return `<option value="${j.date}" ${isSel}>${j.date} · ${pnl} (${r}) · ${j.trades_count} Trades</option>`;
+      }).join("");
+
+      await fetchAndDisplayJournal(selected);
+    }
+
+    async function fetchAndDisplayJournal(dateStr) {
+      currentJournalDate = dateStr;
+      const bodyEl = document.getElementById("journal-markdown-body");
+      if (bodyEl) {
+        bodyEl.innerHTML = `<div class="p-8 text-center text-gray-400 text-xs font-mono">Loading journal for ${dateStr}...</div>`;
+      }
+
+      try {
+        const res = await fetch(`/api/journal/get?date=${dateStr}`);
+        const data = await res.json();
+        const rec = data.record;
+        currentJournalRawMarkdown = data.content || "";
+
+        if (rec) {
+          const pnlEl = document.getElementById("journal-kpi-pnl");
+          const roiEl = document.getElementById("journal-kpi-roi");
+          const rEl = document.getElementById("journal-kpi-r");
+          const trEl = document.getElementById("journal-kpi-trades");
+          const wlEl = document.getElementById("journal-kpi-wl");
+          const wrEl = document.getElementById("journal-kpi-winrate");
+          const pfEl = document.getElementById("journal-kpi-pf");
+
+          if (pnlEl) {
+            const p = rec.total_pnl || 0;
+            pnlEl.innerText = `${p >= 0 ? '+' : ''}$${p.toFixed(2)}`;
+            pnlEl.className = `text-2xl font-bold mt-1 ${p >= 0 ? 'text-emerald-400' : 'text-red-400'}`;
+          }
+          if (roiEl) {
+            const roi = rec.roi_pct || 0;
+            roiEl.innerText = `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}% ROI`;
+            roiEl.className = `text-xs mt-0.5 ${roi >= 0 ? 'text-emerald-400/80' : 'text-red-400/80'}`;
+          }
+          if (rEl) {
+            const r = rec.net_r_multiple || 0;
+            rEl.innerText = `${r >= 0 ? '+' : ''}${r.toFixed(2)}R`;
+            rEl.className = `text-2xl font-bold mt-1 ${r >= 0 ? 'text-emerald-400' : 'text-red-400'}`;
+          }
+          if (trEl) trEl.innerText = `${rec.trades_count || 0}`;
+          if (wlEl) wlEl.innerText = `${rec.wins || 0}W / ${rec.losses || 0}L / ${rec.breakevens || 0}BE`;
+          if (wrEl) wrEl.innerText = `${(rec.win_rate || 0).toFixed(1)}%`;
+          if (pfEl) pfEl.innerText = `${(rec.profit_factor || 0).toFixed(2)}`;
+        }
+
+        if (bodyEl) {
+          if (currentJournalRawMarkdown) {
+            if (window.marked && typeof window.marked.parse === "function") {
+              bodyEl.innerHTML = marked.parse(currentJournalRawMarkdown);
+            } else {
+              bodyEl.innerHTML = `<pre class="whitespace-pre-wrap text-xs text-gray-300 font-mono">${currentJournalRawMarkdown}</pre>`;
+            }
+          } else {
+            bodyEl.innerHTML = `<div class="p-8 text-center text-gray-500 text-sm">No journal document found for ${dateStr}.</div>`;
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching journal entry:", err);
+        if (bodyEl) {
+          bodyEl.innerHTML = `<div class="p-8 text-center text-red-400 text-sm">Failed to load journal: ${err.message}</div>`;
+        }
+      }
+    }
+
+    function onJournalDateChange() {
+      const select = document.getElementById("journal-date-select");
+      if (select && select.value) {
+        fetchAndDisplayJournal(select.value);
+      }
+    }
+
+    async function refreshTodayJournal() {
+      const btn = document.getElementById("btn-journal-refresh");
+      const origText = btn ? btn.innerHTML : "";
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<span>⏳</span> Compiling...`;
+      }
+      try {
+        const res = await fetch("/api/journal/generate", { method: "POST" });
+        const data = await res.json();
+        const todayStr = new Date().toISOString().slice(0, 10);
+        await loadAndRenderJournal(todayStr);
+      } catch (err) {
+        alert("Failed to refresh journal: " + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = origText;
+        }
+      }
+    }
+
+    async function backfillAllJournals() {
+      const btn = document.getElementById("btn-journal-backfill");
+      const origText = btn ? btn.innerHTML : "";
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<span>⏳</span> Backfilling...`;
+      }
+      try {
+        const res = await fetch("/api/journal/backfill", { method: "POST" });
+        const data = await res.json();
+        alert(`Backfilled ${data.count || 0} journal sessions.`);
+        await loadAndRenderJournal();
+      } catch (err) {
+        alert("Failed to backfill journals: " + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = origText;
+        }
+      }
+    }
+
+    function downloadCurrentJournal() {
+      if (!currentJournalRawMarkdown) {
+        alert("No journal loaded to download.");
+        return;
+      }
+      const filename = `aegis_alpha_journal_${currentJournalDate || 'session'}.md`;
+      const blob = new Blob([currentJournalRawMarkdown], { type: "text/markdown;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     }
 
 
