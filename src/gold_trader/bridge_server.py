@@ -89,11 +89,31 @@ def handle_client(conn: socket.socket, addr: Any):
         # Support both 'command' and 'action'
         cmd = req.get("command", req.get("action", "")).upper()
         
-        ensure_mt5()
+        mt5_initialized = ensure_mt5()
         resp: Dict[str, Any] = {"status": "ERROR"}
 
         if cmd in ("PING", "STATUS", "HEALTH"):
-            resp = {"status": "SUCCESS", "message": "MT5 Bridge Online"}
+            term_info = mt5.terminal_info() if mt5_initialized else None
+            term_connected = bool(getattr(term_info, "connected", False)) if term_info else False
+            trade_allowed = bool(getattr(term_info, "trade_allowed", False)) if term_info else False
+            resp = {
+                "status": "SUCCESS" if (mt5_initialized and term_connected) else "ERROR",
+                "error_code": "SUCCESS" if (mt5_initialized and term_connected) else ("MT5_NOT_INITIALIZED" if not mt5_initialized else "MT5_TERMINAL_DISCONNECTED"),
+                "socket_status": "ONLINE",
+                "mt5_initialized": bool(mt5_initialized),
+                "mt5_connected": term_connected,
+                "trade_allowed": trade_allowed,
+                "message": "MT5 Bridge and Terminal Online" if (mt5_initialized and term_connected) else "MT5 Terminal Unavailable",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        elif not mt5_initialized:
+            last_err = mt5.last_error() if hasattr(mt5, "last_error") else (0, "Initialization failed")
+            resp = {
+                "status": "ERROR",
+                "error_code": "MT5_NOT_INITIALIZED",
+                "message": f"MT5 terminal initialization failed: error code {last_err[0]}",
+            }
 
         elif cmd in ("SYMBOL_INFO", "GET_TICK", "TICK"):
             raw_sym = req.get("symbol", "XAUUSD")
@@ -123,7 +143,14 @@ def handle_client(conn: socket.socket, addr: Any):
 
         elif cmd in ("ACCOUNT_INFO", "GET_ACCOUNT", "ACCOUNT"):
             info = mt5.account_info()
-            if info:
+            if info is None:
+                last_err = mt5.last_error() if hasattr(mt5, "last_error") else (0, "Account info unavailable")
+                resp = {
+                    "status": "ERROR",
+                    "error_code": "MT5_ACCOUNT_UNAVAILABLE",
+                    "message": f"Failed to get account info: error code {last_err[0]}",
+                }
+            else:
                 resp = {
                     "status": "SUCCESS",
                     "login": str(info.login),
@@ -139,8 +166,6 @@ def handle_client(conn: socket.socket, addr: Any):
                     "trade_mode": "DEMO" if info.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO else "LIVE",
                     "trade_allowed": bool(info.trade_allowed),
                 }
-            else:
-                resp = {"status": "ERROR", "message": f"Failed to get account info: {mt5.last_error()}"}
 
         elif cmd in ("GET_POSITIONS", "POSITIONS", "LIST_POSITIONS"):
             filter_sym = req.get("symbol", "")
@@ -150,8 +175,15 @@ def handle_client(conn: socket.socket, addr: Any):
             else:
                 positions = mt5.positions_get()
                 
-            pos_list = []
-            if positions:
+            if positions is None:
+                last_err = mt5.last_error() if hasattr(mt5, "last_error") else (0, "Positions unavailable")
+                resp = {
+                    "status": "ERROR",
+                    "error_code": "MT5_POSITIONS_UNAVAILABLE",
+                    "message": f"Failed to get positions from MT5: error code {last_err[0]}",
+                }
+            else:
+                pos_list = []
                 for p in positions:
                     pos_list.append({
                         "ticket": str(p.ticket),
@@ -166,7 +198,7 @@ def handle_client(conn: socket.socket, addr: Any):
                         "open_time": datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat(),
                         "comment": p.comment,
                     })
-            resp = {"status": "SUCCESS", "positions": pos_list}
+                resp = {"status": "SUCCESS", "positions": pos_list}
 
         elif cmd in ("GET_RATES", "RATES", "GET_CANDLES", "CANDLES"):
             raw_sym = req.get("symbol", "XAUUSD")
@@ -201,7 +233,12 @@ def handle_client(conn: socket.socket, addr: Any):
                     })
                 resp = {"status": "SUCCESS", "symbol": symbol, "timeframe": timeframe_str, "candles": candles_out}
             else:
-                resp = {"status": "ERROR", "message": f"Failed to get rates for {symbol}: {mt5.last_error()}"}
+                last_err = mt5.last_error() if hasattr(mt5, "last_error") else (0, "Rates unavailable")
+                resp = {
+                    "status": "ERROR",
+                    "error_code": "MT5_RATES_UNAVAILABLE",
+                    "message": f"Failed to get rates for {symbol}: error code {last_err[0]}",
+                }
 
         elif cmd in ("GET_ORDERS", "PENDING_ORDERS", "GET_PENDING_ORDERS"):
             filter_sym = req.get("symbol", "")
@@ -211,8 +248,15 @@ def handle_client(conn: socket.socket, addr: Any):
             else:
                 orders = mt5.orders_get()
 
-            ord_list = []
-            if orders:
+            if orders is None:
+                last_err = mt5.last_error() if hasattr(mt5, "last_error") else (0, "Orders unavailable")
+                resp = {
+                    "status": "ERROR",
+                    "error_code": "MT5_ORDERS_UNAVAILABLE",
+                    "message": f"Failed to get pending orders from MT5: error code {last_err[0]}",
+                }
+            else:
+                ord_list = []
                 for o in orders:
                     ord_list.append({
                         "ticket": str(o.ticket),
@@ -226,7 +270,7 @@ def handle_client(conn: socket.socket, addr: Any):
                         "time_setup": datetime.fromtimestamp(o.time_setup, tz=timezone.utc).isoformat(),
                         "comment": o.comment,
                     })
-            resp = {"status": "SUCCESS", "orders": ord_list}
+                resp = {"status": "SUCCESS", "orders": ord_list}
 
         elif cmd in ("CANCEL_ORDER", "DELETE_ORDER", "REMOVE_ORDER"):
             ticket = int(req.get("ticket", 0))
@@ -361,8 +405,18 @@ def handle_client(conn: socket.socket, addr: Any):
                     if result and result.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                         ticket = result.order
                         filled_price = float(result.price) if result.price else price
-                        applied_sl = None
-                        applied_tp = None
+                        pos_ticket = ticket
+
+                        # Find open position ticket
+                        positions = mt5.positions_get(symbol=symbol)
+                        if positions:
+                            matching = [p for p in positions if p.magic == 987001 or p.ticket == ticket]
+                            if matching:
+                                pos_ticket = matching[-1].ticket
+
+                        # Verify existing position stop state
+                        pos_check = mt5.positions_get(ticket=pos_ticket)
+                        current_pos_sl = float(pos_check[0].sl) if (pos_check and pos_check[0].sl) else 0.0
 
                         # If SL or TP were requested, apply them via TRADE_ACTION_SLTP with stops_level validation
                         if sl > 0 or tp > 0:
@@ -388,41 +442,83 @@ def handle_client(conn: socket.socket, addr: Any):
                                 if target_tp > 0 and (cur_tick.ask - target_tp) < min_distance:
                                     target_tp = round(cur_tick.ask - min_distance, cur_info.digits)
 
-                            # Find open position ticket
-                            positions = mt5.positions_get(symbol=symbol)
-                            pos_ticket = ticket
-                            if positions:
-                                matching = [p for p in positions if p.magic == 987001 or p.ticket == ticket]
-                                if matching:
-                                    pos_ticket = matching[-1].ticket
+                            if current_pos_sl == 0.0 or (target_sl > 0 and abs(current_pos_sl - target_sl) > 0.01):
+                                mod_req = {
+                                    "action": mt5.TRADE_ACTION_SLTP,
+                                    "position": pos_ticket,
+                                    "symbol": symbol,
+                                    "sl": target_sl if target_sl > 0 else 0.0,
+                                    "tp": target_tp if target_tp > 0 else 0.0,
+                                }
+                                mod_res = mt5.order_send(mod_req)
+                                if not (mod_res and mod_res.retcode == mt5.TRADE_RETCODE_DONE):
+                                    err_mod = mod_res.comment if mod_res else str(mt5.last_error())
+                                    print(f"[{datetime.now()}] Position #{pos_ticket} SL/TP mod failed: {err_mod}", flush=True)
 
-                            mod_req = {
-                                "action": mt5.TRADE_ACTION_SLTP,
+                        # Read-back verification: position MUST have active SL if sl was requested
+                        v_pos = mt5.positions_get(ticket=pos_ticket)
+                        sl_verified = False
+                        if v_pos and len(v_pos) > 0:
+                            actual_v_sl = float(v_pos[0].sl) if v_pos[0].sl else 0.0
+                            if sl > 0:
+                                sl_verified = (actual_v_sl > 0.0)
+                            else:
+                                sl_verified = True
+
+                        if sl > 0 and not sl_verified:
+                            # CRITICAL: Position is unprotected! Emergency close immediately!
+                            close_type = mt5.ORDER_TYPE_SELL if side_str == "BUY" else mt5.ORDER_TYPE_BUY
+                            c_tick = mt5.symbol_info_tick(symbol) or tick
+                            c_price = c_tick.bid if close_type == mt5.ORDER_TYPE_SELL else c_tick.ask
+                            em_req = {
+                                "action": mt5.TRADE_ACTION_DEAL,
                                 "position": pos_ticket,
                                 "symbol": symbol,
-                                "sl": target_sl if target_sl > 0 else 0.0,
-                                "tp": target_tp if target_tp > 0 else 0.0,
+                                "volume": lots,
+                                "type": close_type,
+                                "price": c_price,
+                                "deviation": 30,
+                                "magic": 987001,
+                                "comment": "EmergencyClose-NoSL",
+                                "type_time": mt5.ORDER_TIME_GTC,
+                                "type_filling": filling_type,
                             }
-                            mod_res = mt5.order_send(mod_req)
-                            if mod_res and mod_res.retcode == mt5.TRADE_RETCODE_DONE:
-                                applied_sl = target_sl if target_sl > 0 else None
-                                applied_tp = target_tp if target_tp > 0 else None
-                            else:
-                                err_mod = mod_res.comment if mod_res else str(mt5.last_error())
-                                print(f"[{datetime.now()}] Position #{pos_ticket} opened, but SL/TP attach: {err_mod}", flush=True)
-
-                        resp = {
-                            "status": "SUCCESS",
-                            "ticket": str(ticket),
-                            "symbol": symbol,
-                            "action": side_str,
-                            "lots": lots,
-                            "price": filled_price,
-                            "sl": applied_sl,
-                            "tp": applied_tp,
-                            "message": f"XM {side_str} {lots} lots of {symbol} executed successfully. Ticket #{ticket}",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
+                            em_res = mt5.order_send(em_req)
+                            post_check = mt5.positions_get(ticket=pos_ticket)
+                            is_closed = (post_check is None or len(post_check) == 0)
+                            resp = {
+                                "status": "EMERGENCY_PROTECTION_FAILED",
+                                "error_code": "UNPROTECTED_POSITION_EMERGENCY_CLOSED" if is_closed else "UNPROTECTED_POSITION_CLOSE_FAILED",
+                                "ticket": str(pos_ticket),
+                                "symbol": symbol,
+                                "action": side_str,
+                                "lots": lots,
+                                "sl": None,
+                                "tp": None,
+                                "sl_verified": False,
+                                "emergency_closed": is_closed,
+                                "lockout": True,
+                                "message": (
+                                    f"CRITICAL SAFETY BREACH: Position #{pos_ticket} opened without verified SL/TP. "
+                                    f"{'Emergency position close executed and verified.' if is_closed else 'EMERGENCY CLOSE FAILED! Position is unprotected!'}"
+                                ),
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                        else:
+                            verified_item = v_pos[0] if (v_pos and len(v_pos) > 0) else None
+                            resp = {
+                                "status": "SUCCESS",
+                                "ticket": str(pos_ticket),
+                                "symbol": symbol,
+                                "action": side_str,
+                                "lots": float(verified_item.volume) if verified_item else lots,
+                                "price": float(verified_item.price_open) if verified_item else filled_price,
+                                "sl": float(verified_item.sl) if (verified_item and verified_item.sl) else None,
+                                "tp": float(verified_item.tp) if (verified_item and verified_item.tp) else None,
+                                "sl_verified": True,
+                                "message": f"XM {side_str} {lots} lots of {symbol} executed and protection verified. Ticket #{pos_ticket}",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
                     else:
                         err_msg = result.comment if result else str(mt5.last_error())
                         resp = {"status": "ERROR", "message": f"Order failed on XM: {err_msg} (retcode: {getattr(result, 'retcode', None)})"}

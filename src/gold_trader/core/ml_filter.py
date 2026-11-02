@@ -47,30 +47,13 @@ DEFAULT_ETH_MODEL_PATH = os.path.expanduser("~/.gold_trading_data/models/eth_ml_
 
 def extract_candle_features(
     candles: List[Dict[str, Any]],
-    macro_score: float = 0.0,
+    macro_score: Optional[float] = None,
 ) -> Tuple[np.ndarray, List[str]]:
     """
     Extract stationary quantitative features for every bar.
     Zero price-level dependence (uses normalized distances, ratios, cyclical time, and percentages).
+    Identical feature-engineering across training and live inference.
     """
-    n = len(candles)
-    closes = [float(c["close"]) for c in candles]
-    highs = [float(c["high"]) for c in candles]
-    lows = [float(c["low"]) for c in candles]
-    opens = [float(c["open"]) for c in candles]
-
-    # Technical indicators
-    ema20 = calc_ema(closes, 20)
-    ema50 = calc_ema(closes, 50)
-    ema200 = calc_ema(closes, 200)
-    atr14 = calc_atr(highs, lows, closes, 14)
-    atr50 = calc_atr(highs, lows, closes, 50)
-    rsi14 = calc_rsi(closes, 14)
-    st = calc_supertrend(highs, lows, closes, 10, 3.0)
-    dc10 = calc_donchian(highs, lows, 10)
-    dc20 = calc_donchian(highs, lows, 20)
-    macd = calc_macd(closes, 12, 26, 9)
-
     feature_names = [
         "body_ratio",
         "lower_wick_ratio",
@@ -94,8 +77,28 @@ def extract_candle_features(
         "is_ny_session",
         "is_overlap_session",
         "candle_direction",
-        "macro_score",
     ]
+
+    n = len(candles)
+    if n == 0:
+        return np.empty((0, len(feature_names)), dtype=float), feature_names
+
+    closes = [float(c["close"]) for c in candles]
+    highs = [float(c["high"]) for c in candles]
+    lows = [float(c["low"]) for c in candles]
+    opens = [float(c["open"]) for c in candles]
+
+    # Technical indicators
+    ema20 = calc_ema(closes, 20)
+    ema50 = calc_ema(closes, 50)
+    ema200 = calc_ema(closes, 200)
+    atr14 = calc_atr(highs, lows, closes, 14)
+    atr50 = calc_atr(highs, lows, closes, 50)
+    rsi14 = calc_rsi(closes, 14)
+    st = calc_supertrend(highs, lows, closes, 10, 3.0)
+    dc10 = calc_donchian(highs, lows, 10)
+    dc20 = calc_donchian(highs, lows, 20)
+    macd = calc_macd(closes, 12, 26, 9)
 
     feature_matrix = []
 
@@ -193,7 +196,6 @@ def extract_candle_features(
             is_ny,
             is_overlap,
             candle_dir,
-            macro_score,
         ]
         feature_matrix.append(row)
 
@@ -349,17 +351,50 @@ class GoldMLPredictor:
         self._load_cached_model()
 
     def _load_cached_model(self) -> bool:
-        if os.path.exists(self.model_path):
-            try:
-                bundle = joblib.load(self.model_path)
-                self.model = bundle["model"]
-                self.feature_names = bundle["feature_names"]
-                self.metadata = bundle.get("metadata", {})
-                logger.info(f"Loaded cached ML model from {self.model_path} (Trained: {self.metadata.get('trained_at')})")
-                return True
-            except Exception as e:
-                logger.warning(f"Could not load cached model from {self.model_path}: {e}")
-        return False
+        if not os.path.exists(self.model_path):
+            self.model = None
+            self.metadata = {"status": "NOT_FOUND", "error": f"Model file not found at {self.model_path}"}
+            return False
+        try:
+            bundle = joblib.load(self.model_path)
+            if not isinstance(bundle, dict) or "model" not in bundle:
+                self.model = None
+                self.metadata = {"status": "CORRUPT_MODEL", "error": "Invalid model bundle format"}
+                return False
+
+            bundle_features = bundle.get("feature_names", [])
+            _, expected_base = extract_candle_features([])
+            expected_features = expected_base + ["trade_direction_sign"]
+            if bundle_features != expected_features:
+                self.model = None
+                self.metadata = {
+                    "status": "SCHEMA_MISMATCH",
+                    "error": f"Model feature schema mismatch: expected {len(expected_features)} features, got {len(bundle_features)}",
+                }
+                logger.warning(self.metadata["error"])
+                return False
+
+            meta = bundle.get("metadata", {})
+            model_sym = meta.get("symbol")
+            if model_sym and self.symbol and model_sym.upper() != self.symbol.upper():
+                self.model = None
+                self.metadata = {
+                    "status": "SYMBOL_MISMATCH",
+                    "error": f"Model trained for {model_sym}, requested {self.symbol}",
+                }
+                logger.warning(self.metadata["error"])
+                return False
+
+            self.model = bundle["model"]
+            self.feature_names = bundle_features
+            self.metadata = meta
+            logger.info(f"Loaded cached ML model from {self.model_path} (Trained: {self.metadata.get('trained_at')})")
+            return True
+        except Exception as e:
+            self.model = None
+            self.metadata = {"status": "CORRUPT_MODEL", "error": f"Failed to load model: {e}"}
+            logger.warning(f"Could not load cached model from {self.model_path}: {e}")
+            return False
 
     def train_model(
         self,
@@ -385,11 +420,8 @@ class GoldMLPredictor:
         if len(candles) < 400:
             return {"error": f"Insufficient candles ({len(candles)}) for ML training. Minimum 400 needed."}
 
-        # Historical training feature extraction:
-        # Enforce point-in-time integrity by using neutral 0.0 macro score for historical training
-        # to strictly eliminate temporal lookahead leakage from today's live market conditions.
-        macro_score_train = 0.0
-        X_all, feature_names = extract_candle_features(candles, macro_score=macro_score_train)
+        # Shared stationary feature extraction (strictly zero lookahead, identical to inference)
+        X_all, feature_names = extract_candle_features(candles)
 
         # Dynamic ATR Triple-Barrier Labeling
         y_buy = label_triple_barrier(
@@ -540,27 +572,28 @@ class GoldMLPredictor:
         to eliminate all intrabar noise and lookahead bias.
         """
         if self.model is None:
-            logger.info(f"ML model for {self.symbol} not found in cache. Training initial model...")
-            self.train_model(period="2y", interval="1h")
-
-        if self.model is None:
-            return {"error": "Failed to initialize ML model"}
-
-        if macro_score is None:
-            macro_data = analyze_macro_drivers()
-            macro_score = float(macro_data.get("macro_gold_score", 0.0))
-
-        X_all, _ = extract_candle_features(candles, macro_score=macro_score)
-        # Use strictly the last fully completed, closed bar (X_all[-2]) when evaluating live candle streams
-        latest_features = X_all[-2] if (use_closed_bar and len(X_all) >= 2) else X_all[-1]
-
-        if np.isnan(latest_features).any():
+            err_msg = self.metadata.get("error", f"ML model unavailable for {self.symbol} at {self.model_path}")
             return {
-                "error": "Insufficient historical candles to compute complete feature vector. Need >= 200 bars.",
-                "probability_win": 0.50,
+                "status": "ERROR",
+                "error": f"ML_UNAVAILABLE: {err_msg}",
+                "probability_win": 0.0,
+                "is_high_conviction": False,
+                "recommendation": "PASS_ML_UNAVAILABLE",
+                "recommended_lot_multiplier": 0.0,
+            }
+
+        X_all, _ = extract_candle_features(candles)
+        # Use strictly the last fully completed, closed bar (X_all[-2]) when evaluating live candle streams
+        latest_features = X_all[-2] if (use_closed_bar and len(X_all) >= 2) else (X_all[-1] if len(X_all) >= 1 else np.array([]))
+
+        if len(latest_features) == 0 or np.isnan(latest_features).any():
+            return {
+                "status": "ERROR",
+                "error": "ML_UNAVAILABLE: Insufficient historical candles to compute complete feature vector (< 200 bars)",
+                "probability_win": 0.0,
                 "is_high_conviction": False,
                 "recommendation": "PASS_INSUFFICIENT_DATA",
-                "recommended_lot_multiplier": 1.0,
+                "recommended_lot_multiplier": 0.0,
             }
 
         dir_sign = 1.0 if direction.upper() == "BUY" else -1.0

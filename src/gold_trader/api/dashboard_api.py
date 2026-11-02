@@ -402,18 +402,32 @@ def fetch_live_asset_cards(
     telemetry = fetch_latest_scan_telemetry()
 
     open_positions_m1: List[Dict[str, Any]] = []
+    m1_feed_status = "VERIFIED"
+    m1_feed_error = ""
     if b1:
         try:
             open_positions_m1 = b1.get_open_positions()
         except Exception as e:
+            m1_feed_status = "UNAVAILABLE"
+            m1_feed_error = str(e)
             logger.warning(f"Failed to fetch Bridge 1 live open positions: {e}")
+    else:
+        m1_feed_status = "UNAVAILABLE"
+        m1_feed_error = "Broker 1 not connected"
 
     open_positions_m2: List[Dict[str, Any]] = []
+    m2_feed_status = "VERIFIED"
+    m2_feed_error = ""
     if b2:
         try:
             open_positions_m2 = b2.get_open_positions()
         except Exception as e:
+            m2_feed_status = "UNAVAILABLE"
+            m2_feed_error = str(e)
             logger.warning(f"Failed to fetch Bridge 2 live open positions: {e}")
+    else:
+        m2_feed_status = "UNAVAILABLE"
+        m2_feed_error = "Broker 2 not connected"
 
     open_by_model_sym: Dict[tuple, Dict[str, Any]] = {}
     tagged_positions: List[Dict[str, Any]] = []
@@ -520,6 +534,8 @@ def fetch_live_asset_cards(
                     "radar": radar_info,
                 }
             else:
+                feed_st = m1_feed_status if m_id == "model_1" else m2_feed_status
+                feed_er = m1_feed_error if m_id == "model_1" else m2_feed_error
                 card_data = {
                     "asset": item["asset"],
                     "symbol": sym,
@@ -529,7 +545,9 @@ def fetch_live_asset_cards(
                     "model_full": mcfg["name"],
                     "badge_color": mcfg["badge_color"],
                     "risk_desc": item["risk_desc"],
-                    "status": "NO TRADE",
+                    "status": "NO TRADE" if feed_st == "VERIFIED" else "FEED_UNAVAILABLE",
+                    "feed_status": feed_st,
+                    "feed_error": feed_er,
                     "side": None,
                     "entry": None,
                     "mark": round(mark_price, 2),
@@ -556,20 +574,150 @@ def fetch_live_asset_cards(
     }
 
 
+@app.get("/api/reconciliation")
+def get_reconciliation_report(symbol: Optional[str] = None):
+    """
+    Run broker-to-database reconciliation and return detected discrepancies.
+    """
+    from gold_trader.core.reconciliation import ReconciliationEngine
+    broker = get_broker(8888)
+    engine = ReconciliationEngine(broker=broker)
+    return engine.reconcile_positions(symbol=symbol)
+
+
 @app.get("/api/health")
 def health():
-    broker = get_broker()
+    """
+    Expose separate, detailed component-level health for MT5 terminal,
+    socket bridge, market data freshness, positions feed, pending orders feed,
+    ML predictor model, and local databases.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    broker = get_broker(8888)
+
+    # 1. Socket Bridge & MT5 Terminal Health
+    socket_health = {"status": "OFFLINE", "host": "127.0.0.1", "port": 8888}
+    mt5_terminal_health = {"status": "DISCONNECTED", "connected": False}
     account_info = None
+    positions_feed = {"status": "UNAVAILABLE", "count": 0, "last_updated": None}
+    pending_feed = {"status": "UNAVAILABLE", "count": 0}
+
     if broker:
         try:
+            h_resp = broker.get_health()
+            if h_resp.get("status") == "ONLINE":
+                socket_health = {"status": "ONLINE", "host": broker.host, "port": broker.port}
+                mt5_terminal_health = {
+                    "status": "CONNECTED" if h_resp.get("mt5_connected") else h_resp.get("mt5_status", "NOT_INITIALIZED"),
+                    "connected": bool(h_resp.get("mt5_connected")),
+                    "terminal_info": h_resp.get("mt5_terminal_info"),
+                }
+        except Exception as e:
+            socket_health["error"] = str(e)
+
+        try:
             account_info = broker.get_account_info()
-        except Exception:
-            pass
+        except Exception as e:
+            account_info = {"status": "ERROR", "message": str(e)}
+
+        try:
+            raw_pos = broker.get_open_positions()
+            positions_feed = {
+                "status": "VERIFIED",
+                "count": len(raw_pos),
+                "last_updated": now_iso,
+            }
+        except Exception as e:
+            positions_feed = {
+                "status": "UNAVAILABLE",
+                "error": str(e),
+                "last_updated": None,
+            }
+
+        try:
+            raw_pend = broker.get_pending_orders()
+            pending_feed = {
+                "status": "VERIFIED",
+                "count": len(raw_pend),
+                "last_updated": now_iso,
+            }
+        except Exception as e:
+            pending_feed = {
+                "status": "UNAVAILABLE",
+                "error": str(e),
+            }
+
+    # 2. Database Health
+    db_health = {"status": "DISCONNECTED"}
+    try:
+        data_dir = os.path.expanduser(os.getenv("GOLD_TRADING_DATA_DIR", "~/.gold_trading_data"))
+        db_path = os.path.join(data_dir, "auto_trader.db")
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute("SELECT count(*) FROM trade_executions")
+            trades_cnt = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM scan_logs")
+            scans_cnt = cur.fetchone()[0]
+            conn.close()
+            db_health = {
+                "status": "CONNECTED",
+                "trade_executions_count": trades_cnt,
+                "scan_logs_count": scans_cnt,
+                "path": db_path,
+            }
+    except Exception as e:
+        db_health = {"status": "ERROR", "error": str(e)}
+
+    # 3. Market Data Freshness
+    market_data_health = {"status": "UNKNOWN", "last_update": None}
+    try:
+        latest_scan = fetch_latest_scan_telemetry()
+        if latest_scan:
+            market_data_health = {
+                "status": "FRESH" if latest_scan.get("timestamp") else "STALE",
+                "latest_scan_time": latest_scan.get("timestamp"),
+                "latest_bias": latest_scan.get("bias"),
+                "latest_price": latest_scan.get("price"),
+            }
+    except Exception:
+        pass
+
+    # 4. ML Predictor Model Health
+    ml_health = {"status": "UNAVAILABLE"}
+    try:
+        from gold_trader.core.ml_filter import GoldMLPredictor, DEFAULT_GOLD_MODEL_PATH
+        pred = GoldMLPredictor(symbol="XAUUSD")
+        ml_health = {
+            "status": "LOADED" if pred.model is not None else pred.metadata.get("status", "NOT_FOUND"),
+            "model_path": DEFAULT_GOLD_MODEL_PATH,
+            "feature_count": len(pred.feature_names),
+            "metadata": pred.metadata,
+        }
+    except Exception as e:
+        ml_health = {"status": "ERROR", "error": str(e)}
+
+    # 5. Overall System Health Synthesis
+    is_healthy = (
+        socket_health.get("status") == "ONLINE"
+        and mt5_terminal_health.get("connected") is True
+        and db_health.get("status") == "CONNECTED"
+        and positions_feed.get("status") == "VERIFIED"
+    )
+
     return {
-        "status": "ONLINE",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "broker_connected": broker is not None,
-        "account_info": account_info,
+        "status": "HEALTHY" if is_healthy else "DEGRADED",
+        "timestamp": now_iso,
+        "components": {
+            "socket_bridge": socket_health,
+            "mt5_terminal": mt5_terminal_health,
+            "account_margin": account_info,
+            "positions_feed": positions_feed,
+            "pending_orders_feed": pending_feed,
+            "market_data": market_data_health,
+            "ml_predictor": ml_health,
+            "database": db_health,
+        },
         "models_active": ["model_1", "model_2"],
     }
 

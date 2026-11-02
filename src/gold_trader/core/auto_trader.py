@@ -21,6 +21,7 @@ from gold_trader.brokers.socket_broker import SocketBroker
 from gold_trader.config import config
 from gold_trader.core.data_feed import fetch_gold_candles, get_live_gold_snapshot
 from gold_trader.core.strategy_engine import (
+    StrategyConfig,
     calculate_lot_size,
     generate_compounding_ladder_setup,
     generate_donchian_breakout_setup,
@@ -82,6 +83,9 @@ class AutoTraderConfig:
     ml_min_probability: float = 0.50
     ml_dynamic_sizing: bool = False
     ml_model_path: Optional[str] = None
+    ml_required: bool = False
+    ml_failure_policy: Literal["FAIL_CLOSED", "FAIL_OPEN"] = "FAIL_CLOSED"
+    require_broker: bool = True
     adx_min_threshold: Optional[float] = None
     require_slope_alignment: bool = True
     ladder_state_file: Optional[str] = None
@@ -119,6 +123,79 @@ class GoldAutoTrader:
         self.last_trade_bar: Optional[str] = self._get_state("last_trade_bar")
         cooldown_str = self._get_state("cooldown_until_ts")
         self.cooldown_until: Optional[float] = float(cooldown_str) if cooldown_str else None
+
+        # Validate effective strategy configuration at daemon startup (Fail Fast)
+        init_strat_cfg = StrategyConfig(
+            symbol=self.config.symbol,
+            timeframe=self.config.timeframe,
+            strategy_mode=self.config.mode,
+            donchian_period=self.config.donchian_period,
+            rr_multiplier=self.config.min_risk_reward,
+            trend_filter_ema=self.config.trend_filter_ema,
+            trigger_mode=self.config.trigger_mode,
+            adx_min_threshold=self.config.adx_min_threshold,
+            require_slope_alignment=self.config.require_slope_alignment,
+            pullback_discount_pips=self.config.pullback_discount_pips if self.config.use_pullback_limit else 0.0,
+            use_pullback_limit=self.config.use_pullback_limit,
+            min_win_probability=self.config.ml_min_probability,
+            runner_t2_multiplier=self.config.runner_target_2_multiplier,
+        )
+        init_strat_cfg.validate()
+        self.strategy_hash = init_strat_cfg.get_hash()
+
+        # Validate Unified Run Configuration with cryptographic hash & Git SHA
+        from gold_trader.core.unified_config import UnifiedRunConfig
+        self.run_config = UnifiedRunConfig(
+            symbol=self.config.symbol,
+            timeframe=self.config.timeframe,
+            strategy_mode=self.config.mode,
+            trigger_mode=self.config.trigger_mode,
+            execution_mode="LIVE" if self.config.auto_execute else "PAPER",
+            donchian_period=self.config.donchian_period,
+            rr_multiplier=self.config.min_risk_reward,
+            trend_filter_ema=self.config.trend_filter_ema,
+            require_slope_alignment=self.config.require_slope_alignment,
+            adx_min_threshold=self.config.adx_min_threshold,
+            use_pullback_limit=self.config.use_pullback_limit,
+            pullback_discount_pips=self.config.pullback_discount_pips if self.config.use_pullback_limit else 0.0,
+            fixed_risk_usd=self.config.fixed_risk_usd,
+            risk_pct_per_trade=self.config.risk_pct_per_trade,
+            enable_partial_scale_out=self.config.enable_partial_scale_out,
+            partial_scale_out_pct=self.config.partial_scale_out_pct,
+            scale_out_r=self.config.scale_out_r,
+            enable_runner_trailing=self.config.enable_runner_trailing,
+            runner_trail_buffer_usd=self.config.runner_trail_buffer_usd,
+            runner_trail_buffer_r=self.config.runner_trail_buffer_r,
+            runner_target_2_multiplier=self.config.runner_target_2_multiplier,
+            trail_to_breakeven_at_t1=self.config.trail_to_breakeven_at_t1,
+            enable_news_catalyst_guard=self.config.enable_news_catalyst_guard,
+            news_guard_buffer_minutes=self.config.news_guard_buffer_minutes,
+            enable_ml_filter=self.config.enable_ml_filter,
+            ml_min_probability=self.config.ml_min_probability,
+            ml_model_path=self.config.ml_model_path,
+            ml_required=self.config.ml_required,
+            ml_failure_policy=self.config.ml_failure_policy,
+            require_broker=self.config.require_broker,
+            session_filter=self.config.session_filter,
+            session_start_hour_utc=self.config.session_start_hour_utc,
+            session_end_hour_utc=self.config.session_end_hour_utc,
+            max_daily_trades=self.config.max_daily_trades,
+            loss_cooldown_minutes=self.config.loss_cooldown_minutes,
+        )
+        self.run_config.validate()
+        self.config_hash = self.run_config.config_hash
+        self.git_sha = self.run_config.git_sha
+        self.schema_version = self.run_config.schema_version
+
+        logger.info(
+            "Strategy Configuration validated: mode=%s, tf=%s, donchian=%d, trigger=%s, hash=%s, git_sha=%s",
+            init_strat_cfg.strategy_mode,
+            init_strat_cfg.timeframe,
+            init_strat_cfg.donchian_period,
+            init_strat_cfg.trigger_mode,
+            self.config_hash,
+            self.git_sha[:8],
+        )
 
     @property
     def ladder_manager(self):
@@ -348,6 +425,32 @@ class GoldAutoTrader:
                     conn.execute("ALTER TABLE trade_executions ADD COLUMN partial_realized_usd REAL DEFAULT 0.0")
                 if "initial_stop_loss" not in cols:
                     conn.execute("ALTER TABLE trade_executions ADD COLUMN initial_stop_loss REAL")
+                if "initial_risk_distance" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN initial_risk_distance REAL")
+                if "initial_lots" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN initial_lots REAL")
+                if "remaining_lots" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN remaining_lots REAL")
+                if "config_hash" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN config_hash TEXT")
+                if "git_sha" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN git_sha TEXT")
+                if "schema_version" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN schema_version TEXT")
+
+                # Scan logs columns for provenance
+                cur.execute("PRAGMA table_info(scan_logs)")
+                scan_cols = [c[1] for c in cur.fetchall()]
+                if "config_hash" not in scan_cols:
+                    conn.execute("ALTER TABLE scan_logs ADD COLUMN config_hash TEXT")
+                if "git_sha" not in scan_cols:
+                    conn.execute("ALTER TABLE scan_logs ADD COLUMN git_sha TEXT")
+
+                # Data migration for existing trades
+                conn.execute("UPDATE trade_executions SET initial_stop_loss = stop_loss WHERE initial_stop_loss IS NULL")
+                conn.execute("UPDATE trade_executions SET initial_risk_distance = abs(entry_price - initial_stop_loss) WHERE initial_risk_distance IS NULL AND initial_stop_loss IS NOT NULL")
+                conn.execute("UPDATE trade_executions SET initial_lots = lots WHERE initial_lots IS NULL")
+                conn.execute("UPDATE trade_executions SET remaining_lots = round(lots - COALESCE(partial_closed_lots, 0.0), 2) WHERE remaining_lots IS NULL")
                 conn.commit()
             except Exception as e:
                 logger.debug("Table migration note: %s", e)
@@ -358,7 +461,90 @@ class GoldAutoTrader:
                     value TEXT NOT NULL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS close_intents (
+                    intent_id TEXT PRIMARY KEY,
+                    ticket TEXT NOT NULL,
+                    intended_lots REAL NOT NULL,
+                    trigger_reason TEXT NOT NULL,
+                    idempotency_key TEXT UNIQUE NOT NULL,
+                    status TEXT NOT NULL,
+                    closed_lots REAL DEFAULT 0.0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
             conn.commit()
+
+    def _get_close_intent(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve persisted close intent by idempotency key."""
+        try:
+            with self._db_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                row = cur.execute("SELECT * FROM close_intents WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.debug("Close intent query note: %s", e)
+            return None
+
+    def _create_close_intent(self, ticket: str, intended_lots: float, trigger_reason: str, idempotency_key: str):
+        """Record intent to close position before sending command to broker."""
+        now_ts = datetime.now(timezone.utc).isoformat()
+        intent_id = f"INTENT_{idempotency_key}"
+        try:
+            with self._db_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO close_intents
+                    (intent_id, ticket, intended_lots, trigger_reason, idempotency_key, status, closed_lots, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (intent_id, str(ticket), float(intended_lots), trigger_reason, idempotency_key, "PENDING", 0.0, now_ts, now_ts)
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error("Failed to create close intent %s: %s", idempotency_key, e)
+
+    def _update_close_intent(self, idempotency_key: str, status: str, closed_lots: float = 0.0):
+        """Update lifecycle state of close intent."""
+        now_ts = datetime.now(timezone.utc).isoformat()
+        try:
+            with self._db_connection() as conn:
+                conn.execute(
+                    "UPDATE close_intents SET status = ?, closed_lots = ?, updated_at = ? WHERE idempotency_key = ?",
+                    (status, float(closed_lots), now_ts, idempotency_key)
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error("Failed to update close intent %s: %s", idempotency_key, e)
+
+    def _reconcile_partial_close(self, ticket: str, intended_lots: float, initial_lots: float) -> Tuple[bool, float]:
+        """Reconcile partial close against broker truth: deal history and remaining volume."""
+        try:
+            # 1. Query broker deal history
+            deals_resp = self.broker.get_deal_history(ticket=ticket)
+            if deals_resp and deals_resp.get("status") == "SUCCESS" and deals_resp.get("deals"):
+                for d in deals_resp.get("deals", []):
+                    d_vol = float(d.get("volume", 0.0))
+                    if d_vol > 0 and abs(d_vol - intended_lots) < 0.01:
+                        logger.info("Partial close verified via broker deal history (ticket #%s, volume %.2f)", ticket, d_vol)
+                        return True, d_vol
+
+            # 2. Query open positions remaining volume
+            open_positions = self.broker.get_open_positions()
+            for p in open_positions:
+                if str(p.get("ticket")) == str(ticket):
+                    current_lots = float(p.get("lots", 0.0))
+                    expected_max = float(initial_lots) - intended_lots + 0.005
+                    if current_lots <= expected_max:
+                        closed_vol = round(float(initial_lots) - current_lots, 2)
+                        logger.info("Partial close verified via volume reduction (initial: %.2f, current: %.2f)", initial_lots, current_lots)
+                        return True, closed_vol if closed_vol > 0 else intended_lots
+        except Exception as recon_err:
+            logger.warning("Error reconciling partial close for #%s: %s", ticket, recon_err)
+
+        return False, 0.0
 
     def _save_state(self, key: str, value: str):
         """Persist engine control state to database."""
@@ -409,15 +595,17 @@ class GoldAutoTrader:
         details: Optional[Dict[str, Any]] = None,
     ):
         now_str = datetime.now(timezone.utc).isoformat()
+        cfg_hash = getattr(self, "config_hash", "")
+        git_sha = getattr(self, "git_sha", "")
         try:
             with self._db_connection() as conn:
                 conn.execute(
                     """
                     INSERT INTO scan_logs 
-                    (timestamp, symbol, price, bias, setup_name, action, quality_score, rr_ratio, decision, details_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (timestamp, symbol, price, bias, setup_name, action, quality_score, rr_ratio, decision, details_json, config_hash, git_sha)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (now_str, symbol, price, bias, setup_name, action, quality_score, rr_ratio, decision, json.dumps(details or {})),
+                    (now_str, symbol, price, bias, setup_name, action, quality_score, rr_ratio, decision, json.dumps(details or {}), cfg_hash, git_sha),
                 )
                 conn.commit()
         except Exception as e:
@@ -430,6 +618,12 @@ class GoldAutoTrader:
         now = datetime.now(timezone.utc).isoformat()
         symbol = self.config.symbol
         
+        # 0. Safety Lockout Check (Block further entries if previous trade had unverified SL/TP)
+        if self._get_state("lockout") == "true" or getattr(self, "lockout", False):
+            logger.critical("SAFETY LOCKOUT ENGAGED: Cannot trade due to unverified protective SL/TP failure. Manual intervention required.")
+            self.log_scan(symbol, 0.0, "LOCKED_OUT", "None", "HOLD", 0, 0.0, "Safety lockout active: protective SL/TP was unverified", {})
+            return {"status": "LOCKED_OUT", "reason": "Safety lockout active: protective SL/TP unverified", "timestamp": now}
+
         # 1. Check account state & open positions (Fail Closed)
         try:
             acct = self.broker.get_account_info()
@@ -454,10 +648,18 @@ class GoldAutoTrader:
             self.log_scan(symbol, 0.0, "ERROR_POSITIONS_UNAVAILABLE", "None", "HOLD", 0, 0.0, "Broker open positions unverified", {})
             return {"status": "BROKER_UNAVAILABLE", "reason": "Open positions unverified", "timestamp": now}
 
-        try:
-            pending_orders = self.broker.get_pending_orders()
-        except Exception as e:
-            logger.warning("Could not fetch pending orders from broker: %s", e)
+        if hasattr(self.broker, "get_pending_orders"):
+            try:
+                pending_orders = self.broker.get_pending_orders()
+            except Exception as e:
+                logger.error("Could not fetch pending orders from broker: %s. Failing closed.", e)
+                pending_orders = None
+
+            if pending_orders is None:
+                logger.error("Pending orders retrieval failed. Failing closed to prevent unverified duplicate orders.")
+                self.log_scan(symbol, 0.0, "ERROR_ORDERS_UNAVAILABLE", "None", "HOLD", 0, 0.0, "Broker pending orders unverified", {})
+                return {"status": "BROKER_UNAVAILABLE", "reason": "Pending orders unverified", "timestamp": now}
+        else:
             pending_orders = []
 
         # 2. Check for Closed Positions (Exit Alert Detection)
@@ -465,25 +667,34 @@ class GoldAutoTrader:
         # 3. Manage existing open positions (Trailing SL / Breakeven)
         managed_actions = self._manage_open_positions(open_positions)
 
-        # 4. Generate Trade Setup based on mode
+        # 4. Generate Trade Setup based on mode & validated StrategyConfig
+        strat_cfg = StrategyConfig(
+            symbol=symbol,
+            timeframe=self.config.timeframe,  # Propagates exact configured timeframe (15m, 1h, etc.)
+            strategy_mode=self.config.mode,
+            donchian_period=self.config.donchian_period,
+            rr_multiplier=self.config.min_risk_reward,
+            trend_filter_ema=self.config.trend_filter_ema,
+            trigger_mode=self.config.trigger_mode,
+            adx_min_threshold=self.config.adx_min_threshold,
+            require_slope_alignment=self.config.require_slope_alignment,
+            pullback_discount_pips=self.config.pullback_discount_pips if self.config.use_pullback_limit else 0.0,
+            use_pullback_limit=self.config.use_pullback_limit,
+            min_win_probability=self.config.ml_min_probability,
+            runner_t2_multiplier=self.config.runner_target_2_multiplier,
+        )
+        strat_cfg.validate()
+
         is_touch = self.config.mode in ("FLAT_RISK_TOUCH", "COMPOUNDING_TOUCH", "HIGH_VELOCITY_TOUCH")
         is_compounding_legacy = self.config.mode in ("COMPOUNDING_LADDER", "COMPOUNDING_HYBRID")
         if is_touch or is_compounding_legacy:
             order_type = "MARKET"
             setup = generate_compounding_ladder_setup(
                 symbol=symbol,
-                timeframe="1h",
+                timeframe=self.config.timeframe,
                 ladder_manager=self.ladder_manager,
-                min_win_probability=self.config.ml_min_probability,
-                use_pullback_limit=False,
-                pullback_discount_pips=0.0,
-                strategy_mode="HIGH_VELOCITY_TOUCH_1H",
-                donchian_period=self.config.donchian_period,
-                rr_multiplier=self.config.min_risk_reward,
-                trend_filter_ema=self.config.trend_filter_ema,
-                trigger_mode=self.config.trigger_mode,
-                adx_min_threshold=self.config.adx_min_threshold,
-                require_slope_alignment=self.config.require_slope_alignment,
+                strategy_config=strat_cfg,
+                require_broker=self.config.require_broker,
             )
             if "error" in setup:
                 self.log_scan(symbol, 0.0, "ERROR", "None", "HOLD", 0, 0.0, f"Error: {setup.get('error')}", setup)
@@ -492,7 +703,7 @@ class GoldAutoTrader:
             order_type = str(setup.get("order_type", "MARKET"))
             price = float(setup.get("entry_price") or setup.get("market_price") or setup.get("setup_details", {}).get("entry_price") or setup.get("bracket_order_specs", {}).get("market_price") or 0.0)
             bias = str(setup.get("bias") or setup.get("setup_details", {}).get("bias", "NEUTRAL"))
-            default_name = f"1H Donchian 10 Touch (Flat Risk ${self.config.fixed_risk_usd:.2f})"
+            default_name = f"{self.config.timeframe.upper()} Donchian {self.config.donchian_period} {self.config.trigger_mode} (Flat Risk ${self.config.fixed_risk_usd:.2f})"
             setup_name = str(setup.get("setup_name", default_name))
             action = str(setup.get("action", "HOLD"))
             quality_score = 95 if action in ("BUY", "SELL") else 50
@@ -509,6 +720,7 @@ class GoldAutoTrader:
                 account_balance=balance,
                 risk_pct=self.config.risk_pct_per_trade,
                 timeframe=self.config.timeframe,
+                require_broker=self.config.require_broker,
             )
             if "error" in setup:
                 self.log_scan(symbol, 0.0, "ERROR", "None", "HOLD", 0, 0.0, f"Error: {setup.get('error')}", setup)
@@ -532,6 +744,7 @@ class GoldAutoTrader:
                 account_balance=balance,
                 risk_pct=self.config.risk_pct_per_trade,
                 timeframe=self.config.timeframe,
+                require_broker=self.config.require_broker,
             )
             if "error" in setup:
                 self.log_scan(symbol, 0.0, "ERROR", "None", "HOLD", 0, 0.0, f"Error: {setup.get('error')}", setup)
@@ -697,39 +910,57 @@ class GoldAutoTrader:
 
         # Check Machine Learning High-Probability Meta-Labeling Gate
         ml_eval = None
-        if self.config.enable_ml_filter and action in ("BUY", "SELL"):
+        if (self.config.enable_ml_filter or self.config.ml_required) and action in ("BUY", "SELL"):
+            ml_failed = False
+            ml_failure_reason = ""
             try:
                 from gold_trader.core.ml_filter import GoldMLPredictor
                 predictor = GoldMLPredictor(model_path=self.config.ml_model_path, symbol=symbol)
-                candles_eval = fetch_gold_candles(symbol, period="1mo", interval=self.config.timeframe)
-                if candles_eval and len(candles_eval) >= 200:
+                candles_eval = fetch_gold_candles(symbol, period="1mo", interval=self.config.timeframe, require_broker=self.config.require_broker)
+                if not candles_eval or len(candles_eval) < 200:
+                    ml_failed = True
+                    ml_failure_reason = f"ML_UNAVAILABLE: Insufficient history ({len(candles_eval) if candles_eval else 0} bars < 200 required)."
+                else:
                     ml_eval = predictor.predict_trade_probability(
                         candles_eval,
                         direction=action,
                         min_probability_threshold=self.config.ml_min_probability,
                         use_closed_bar=True,
                     )
-                    setup["ml_filter"] = ml_eval
-                    prob_win = float(ml_eval.get("probability_win", 0.50))
-                    is_high_conv = bool(ml_eval.get("is_high_conviction", False))
-                    lot_mult = float(ml_eval.get("recommended_lot_multiplier", 1.0))
-
-                    if not is_high_conv:
-                        rejection_reasons.append(
-                            f"ML Filter Gate: Win probability {prob_win:.1%} < minimum threshold "
-                            f"{self.config.ml_min_probability:.1%}. Skipping low-probability setup to preserve capital."
-                        )
+                    if "error" in ml_eval or ml_eval.get("status") == "ERROR":
+                        ml_failed = True
+                        ml_failure_reason = f"ML_UNAVAILABLE: {ml_eval.get('error', 'Prediction error')}"
                     else:
-                        logger.info(
-                            f"🤖 ML Gate Approved: Win Probability {prob_win:.1%} >= {self.config.ml_min_probability:.1%} "
-                            f"({ml_eval.get('recommendation', 'APPROVED')})"
-                        )
-                        if self.config.ml_dynamic_sizing and lot_mult > 0:
-                            old_lots = suggested_lots
-                            suggested_lots = max(0.01, round(suggested_lots * lot_mult, 2))
-                            logger.info(f"🤖 ML Dynamic Sizing: Scaled lots {old_lots} -> {suggested_lots} (x{lot_mult:.2f})")
+                        setup["ml_filter"] = ml_eval
+                        prob_win = float(ml_eval.get("probability_win", 0.50))
+                        is_high_conv = bool(ml_eval.get("is_high_conviction", False))
+                        lot_mult = float(ml_eval.get("recommended_lot_multiplier", 1.0))
+
+                        if not is_high_conv:
+                            rejection_reasons.append(
+                                f"ML Filter Gate: Win probability {prob_win:.1%} < minimum threshold "
+                                f"{self.config.ml_min_probability:.1%}. Skipping low-probability setup to preserve capital."
+                            )
+                        else:
+                            logger.info(
+                                f"🤖 ML Gate Approved: Win Probability {prob_win:.1%} >= {self.config.ml_min_probability:.1%} "
+                                f"({ml_eval.get('recommendation', 'APPROVED')})"
+                            )
+                            if self.config.ml_dynamic_sizing and lot_mult > 0:
+                                old_lots = suggested_lots
+                                suggested_lots = max(0.01, round(suggested_lots * lot_mult, 2))
+                                logger.info(f"🤖 ML Dynamic Sizing: Scaled lots {old_lots} -> {suggested_lots} (x{lot_mult:.2f})")
             except Exception as ml_err:
-                logger.debug("ML Filter gate evaluation note: %s", ml_err)
+                ml_failed = True
+                ml_failure_reason = f"ML_UNAVAILABLE: Prediction exception: {ml_err}"
+                logger.error("ML Filter gate evaluation error: %s", ml_err)
+
+            if ml_failed:
+                if self.config.ml_required or self.config.ml_failure_policy == "FAIL_CLOSED":
+                    rejection_reasons.append(ml_failure_reason)
+                    logger.warning("🛡️ ML Filter FAIL_CLOSED engaged: %s. Order blocked.", ml_failure_reason)
+                else:
+                    logger.warning("ML Filter FAIL_OPEN engaged: %s. Permitting trade under optional mode.", ml_failure_reason)
 
         # 6. Make Final Decision & Execute
         if rejection_reasons:
@@ -794,7 +1025,18 @@ class GoldAutoTrader:
                         order_type="LIMIT" if order_type == "LIMIT" else "MARKET",
                     )
                     # Record to trade executions database & send Telegram alert
-                    if order_result.get("status") == "SUCCESS":
+                    res_status = order_result.get("status")
+                    if res_status == "SUCCESS":
+                        # Verify that protective SL was confirmed if sl was requested
+                        order_sl = order_result.get("sl")
+                        if sl is not None and float(sl) > 0 and (order_sl is None or float(order_sl) <= 0):
+                            logger.critical("🚨 Protective SL missing from confirmed trade! Triggering emergency lockout.")
+                            self.lockout = True
+                            self._save_state("lockout", "true")
+                            if self.config.send_telegram_alerts:
+                                self.notifier.send_error_alert(f"🚨 CRITICAL SAFETY BREACH: Trade on {symbol} lacks verified SL! Emergency lockout active.")
+                            return {"status": "EMERGENCY_PROTECTION_FAILED", "message": "Position lacks verified SL", "timestamp": now}
+
                         ticket = str(order_result.get("ticket"))
                         filled_price = float(order_result.get("price", price))
                         
@@ -828,16 +1070,22 @@ class GoldAutoTrader:
                             "partial_closed_lots": 0.0,
                             "partial_realized_usd": 0.0,
                             "initial_stop_loss": sl,
+                            "initial_risk_distance": trade_risk_d,
+                            "initial_lots": suggested_lots,
+                            "remaining_lots": suggested_lots,
+                            "config_hash": getattr(self, "config_hash", ""),
+                            "git_sha": getattr(self, "git_sha", ""),
+                            "schema_version": getattr(self, "schema_version", "2.0.0"),
                         }
                         
                         with self._db_connection() as conn:
                             conn.execute(
                                 """
                                 INSERT OR REPLACE INTO trade_executions
-                                (timestamp, ticket, symbol, action, lots, entry_price, stop_loss, target_1, target_2, rr_ratio, status, comment, tp1_taken, peak_price, partial_closed_lots, partial_realized_usd, initial_stop_loss)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                (timestamp, ticket, symbol, action, lots, entry_price, stop_loss, target_1, target_2, rr_ratio, status, comment, tp1_taken, peak_price, partial_closed_lots, partial_realized_usd, initial_stop_loss, initial_risk_distance, initial_lots, remaining_lots, config_hash, git_sha, schema_version)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
-                                (now, ticket, symbol, action, suggested_lots, filled_price, sl, calc_stage1_tp, calc_stage2_tp if self.config.enable_runner_trailing else tp2, rr_t1, "OPEN", order_comment, 0, filled_price, 0.0, 0.0, sl),
+                                (now, ticket, symbol, action, suggested_lots, filled_price, sl, calc_stage1_tp, calc_stage2_tp if self.config.enable_runner_trailing else tp2, rr_t1, "OPEN", order_comment, 0, filled_price, 0.0, 0.0, sl, trade_risk_d, suggested_lots, suggested_lots, getattr(self, "config_hash", ""), getattr(self, "git_sha", ""), getattr(self, "schema_version", "2.0.0")),
                             )
                             conn.commit()
 
@@ -845,6 +1093,12 @@ class GoldAutoTrader:
 
                         if self.config.send_telegram_alerts:
                             self.notifier.send_trade_entry(order=order_result, setup=setup)
+                    elif res_status == "EMERGENCY_PROTECTION_FAILED" or order_result.get("lockout"):
+                        logger.critical("🚨 EMERGENCY: Order failed protection verification! Lockout engaged. Details: %s", order_result.get("message"))
+                        self.lockout = True
+                        self._save_state("lockout", "true")
+                        if self.config.send_telegram_alerts:
+                            self.notifier.send_error_alert(f"🚨 CRITICAL SAFETY BREACH: {order_result.get('message')}. System LOCKED OUT.")
                 except Exception as e:
                     order_result = {"status": "ERROR", "message": f"Execution failed: {e}"}
             else:
@@ -952,6 +1206,10 @@ class GoldAutoTrader:
                         "peak_price": open_price,
                         "partial_closed_lots": 0.0,
                         "partial_realized_usd": 0.0,
+                        "initial_stop_loss": initial_sl,
+                        "initial_risk_distance": initial_risk_dist,
+                        "initial_lots": cur_lots,
+                        "remaining_lots": cur_lots,
                     }
                     self.tracked_positions[ticket] = tracked
 
@@ -962,9 +1220,9 @@ class GoldAutoTrader:
                     peak_price = min(float(tracked.get("peak_price") or open_price), current_price)
                 tracked["peak_price"] = peak_price
 
-                # Determine initial risk and R-multiple targets
-                initial_sl = float(tracked.get("stop_loss") or sl or (open_price - default_sl_dist if side == "BUY" else open_price + default_sl_dist))
-                initial_risk_dist = max(abs(open_price - initial_sl), default_sl_dist)
+                # Determine immutable initial risk and R-multiple targets
+                initial_sl = float(tracked.get("initial_stop_loss") or tracked.get("stop_loss") or sl or (open_price - default_sl_dist if side == "BUY" else open_price + default_sl_dist))
+                initial_risk_dist = float(tracked.get("initial_risk_distance") or max(abs(open_price - initial_sl), default_sl_dist))
 
                 # Dynamic 0.5R Trailing Stop Buffer calculation
                 if self.config.runner_trail_buffer_r is not None and self.config.runner_trail_buffer_r > 0:
@@ -997,21 +1255,52 @@ class GoldAutoTrader:
                     scaled_out_usd = 0.0
                     if cur_lots >= 0.02 and self.config.enable_partial_scale_out:
                         close_lots = round(cur_lots * self.config.partial_scale_out_pct, 2)
-                        close_res = self.broker.close_position(ticket=ticket, lots=close_lots)
-                        if close_res.get("status") == "SUCCESS":
-                            scaled_out_lots = close_lots
-                            scaled_out_usd = round(abs(current_price - open_price) * close_lots * contract_size, 2)
+                        idempotency_key = f"SCALE_OUT_{ticket}_{close_lots:.2f}"
+                        intent = self._get_close_intent(idempotency_key)
+                        if intent and intent.get("status") in ("COMPLETED", "RECONCILED"):
+                            scale_out_success = True
+                            scaled_out_lots = float(intent.get("closed_lots", close_lots))
                             tracked["partial_closed_lots"] = scaled_out_lots
-                            tracked["partial_realized_usd"] = scaled_out_usd
-                            msg = f"🏆 Scaled out {close_lots} lots (+$ {scaled_out_usd:.2f}) at Target 1 for Ticket #{ticket}"
-                            actions_taken.append(msg)
-                            logger.info(msg)
+                            tracked["tp1_taken"] = 1
                         else:
-                            scale_out_success = False
-                            logger.warning("Partial scale-out failed for #%s: %s. Will retry next tick.", ticket, close_res.get("message"))
+                            if not intent:
+                                self._create_close_intent(
+                                    ticket=ticket,
+                                    intended_lots=close_lots,
+                                    trigger_reason="TARGET_1_SCALE_OUT",
+                                    idempotency_key=idempotency_key,
+                                )
+                            close_res = self.broker.close_position(ticket=ticket, lots=close_lots)
+                            if close_res.get("status") == "SUCCESS":
+                                scaled_out_lots = float(close_res.get("lots") or close_lots)
+                                scaled_out_usd = round(abs(current_price - open_price) * scaled_out_lots * contract_size, 2)
+                                self._update_close_intent(idempotency_key, status="COMPLETED", closed_lots=scaled_out_lots)
+                                tracked["partial_closed_lots"] = scaled_out_lots
+                                tracked["partial_realized_usd"] = scaled_out_usd
+                                msg = f"🏆 Scaled out {close_lots} lots (+$ {scaled_out_usd:.2f}) at Target 1 for Ticket #{ticket}"
+                                actions_taken.append(msg)
+                                logger.info(msg)
+                            else:
+                                # Reconcile against broker deal history & remaining position volume
+                                recon_success, recon_lots = self._reconcile_partial_close(ticket, close_lots, initial_lots=float(tracked.get("lots", cur_lots)))
+                                if recon_success:
+                                    scaled_out_lots = recon_lots
+                                    scaled_out_usd = round(abs(current_price - open_price) * scaled_out_lots * contract_size, 2)
+                                    self._update_close_intent(idempotency_key, status="RECONCILED", closed_lots=scaled_out_lots)
+                                    tracked["partial_closed_lots"] = scaled_out_lots
+                                    tracked["partial_realized_usd"] = scaled_out_usd
+                                    scale_out_success = True
+                                    msg = f"🏆 Reconciled partial close {scaled_out_lots} lots (+$ {scaled_out_usd:.2f}) at Target 1 for Ticket #{ticket}"
+                                    actions_taken.append(msg)
+                                    logger.info(msg)
+                                else:
+                                    scale_out_success = False
+                                    logger.warning("Partial scale-out failed for #%s: %s. Pending reconciliation.", ticket, close_res.get("message"))
 
                     if scale_out_success:
                         tracked["tp1_taken"] = 1
+                        init_vol = float(tracked.get("initial_lots") or tracked.get("lots") or cur_lots)
+                        tracked["remaining_lots"] = max(0.0, round(init_vol - float(tracked.get("partial_closed_lots", 0.0)), 2))
 
                         # Shift remaining volume to Break-Even + offset (Risk-Free Runner) if enabled
                         res = {"status": "SKIPPED"}
@@ -1094,10 +1383,10 @@ class GoldAutoTrader:
                     conn.execute(
                         """
                         UPDATE trade_executions 
-                        SET stop_loss = ?, tp1_taken = ?, peak_price = ?, partial_closed_lots = ?, partial_realized_usd = ?
+                        SET stop_loss = ?, tp1_taken = ?, peak_price = ?, partial_closed_lots = ?, partial_realized_usd = ?, remaining_lots = ?
                         WHERE ticket = ?
                         """,
-                        (tracked.get("stop_loss"), int(tracked.get("tp1_taken", 0)), float(tracked.get("peak_price", open_price)), float(tracked.get("partial_closed_lots", 0.0)), float(tracked.get("partial_realized_usd", 0.0)), ticket),
+                        (tracked.get("stop_loss"), int(tracked.get("tp1_taken", 0)), float(tracked.get("peak_price", open_price)), float(tracked.get("partial_closed_lots", 0.0)), float(tracked.get("partial_realized_usd", 0.0)), float(tracked.get("remaining_lots", cur_lots)), ticket),
                     )
                     conn.commit()
 
@@ -1176,7 +1465,7 @@ class GoldAutoTrader:
                 conn.execute(
                     """
                     UPDATE trade_executions 
-                    SET status = 'CLOSED', close_price = ?, pnl = ?, close_time = ?
+                    SET status = 'CLOSED', close_price = ?, pnl = ?, close_time = ?, remaining_lots = 0.0
                     WHERE ticket = ?
                     """,
                     (close_price, pnl, now_str, ticket),

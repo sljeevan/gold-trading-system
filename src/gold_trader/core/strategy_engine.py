@@ -7,7 +7,10 @@ Layer 3: Trigger + ATR Stop + Dual Targets (1:2+ R:R) + Risk-Based Lot Sizing
 """
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Any, Dict, List, Literal, Optional
 
 from gold_trader.core.compounding_ladder import (
@@ -28,6 +31,48 @@ from gold_trader.core.indicators import (
 )
 from gold_trader.core.macro import analyze_macro_drivers
 from gold_trader.core.price_action import extract_price_action_signals
+
+
+@dataclass
+class StrategyConfig:
+    """
+    Typed, validated strategy configuration object governing technical indicators,
+    execution triggers, timeframe resolution, and exit parameters.
+    """
+    symbol: str = "XAUUSD"
+    timeframe: str = "1h"
+    strategy_mode: str = "DONCHIAN_BREAKOUT"
+    donchian_period: int = 10
+    rr_multiplier: float = 1.25
+    trend_filter_ema: int = 50
+    trigger_mode: str = "TOUCH"
+    adx_min_threshold: Optional[float] = None
+    require_slope_alignment: bool = True
+    pullback_discount_pips: float = 0.0
+    use_pullback_limit: bool = False
+    min_win_probability: float = 0.50
+    runner_t2_multiplier: float = 3.0
+
+    def validate(self) -> None:
+        """Validate configuration settings, failing fast on invalid/unsupported parameters."""
+        valid_tfs = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
+        tf_clean = self.timeframe.lower().strip()
+        if tf_clean not in valid_tfs:
+            raise ValueError(f"Unsupported timeframe '{self.timeframe}'. Must be one of {valid_tfs}")
+        if self.donchian_period < 2:
+            raise ValueError(f"Invalid donchian_period {self.donchian_period}. Must be >= 2")
+        trig_clean = self.trigger_mode.upper().strip()
+        if trig_clean not in ("TOUCH", "BREAKOUT", "CLOSE"):
+            raise ValueError(f"Unsupported trigger_mode '{self.trigger_mode}'. Must be TOUCH, BREAKOUT, or CLOSE")
+        if self.trend_filter_ema not in (20, 50, 100, 200, 0):
+            raise ValueError(f"Unsupported trend_filter_ema {self.trend_filter_ema}. Must be 20, 50, 100, 200, or 0")
+        if self.rr_multiplier <= 0:
+            raise ValueError(f"Invalid rr_multiplier {self.rr_multiplier}. Must be > 0")
+
+    def get_hash(self) -> str:
+        """Compute deterministic SHA256 hash of effective configuration."""
+        data = json.dumps(asdict(self), sort_keys=True)
+        return hashlib.sha256(data.encode("utf-8")).hexdigest()[:12]
 
 
 def calculate_lot_size(
@@ -412,6 +457,7 @@ def generate_donchian_breakout_setup(
     risk_pct: float = 1.0,
     timeframe: str = "1h",
     donchian_period: int = 20,
+    require_broker: bool = False,
 ) -> Dict[str, Any]:
     """
     Tournament-Winning Donchian 20-Bar Channel Breakout + SuperTrend Confluence Strategy.
@@ -435,7 +481,7 @@ def generate_donchian_breakout_setup(
       * Target 1: 1.2R (for partial 50% scale-out).
       * Target 2: 2.0R (for full trend runner extension).
     """
-    candles_entry = fetch_gold_candles(symbol, period="3mo", interval=timeframe)
+    candles_entry = fetch_gold_candles(symbol, period="3mo", interval=timeframe, require_broker=require_broker)
     if len(candles_entry) < 30:
         return {"error": f"Insufficient {timeframe} candle history ({len(candles_entry)}). Need >= 30."}
 
@@ -614,6 +660,7 @@ def generate_donchian_momentum_hybrid_setup(
     runner_t2_multiplier: float = 3.0,
     adx_min_threshold: Optional[float] = None,
     require_slope_alignment: bool = True,
+    require_broker: bool = False,
 ) -> Dict[str, Any]:
     """
     High-Velocity Donchian 10 Touch + SuperTrend + 50 EMA Strategy for Gold (XAUUSD), BTC & ETH.
@@ -624,7 +671,7 @@ def generate_donchian_momentum_hybrid_setup(
     - 50 EMA Slope Alignment: rejects buying when 50 EMA is sloping down, rejects selling when sloping up
     - Regime-Aware ADX Guard: suppresses trades in non-trending sideways consolidation (e.g. ADX < 22 on ETH)
     """
-    candles_entry = fetch_gold_candles(symbol, period="3mo", interval=timeframe)
+    candles_entry = fetch_gold_candles(symbol, period="3mo", interval=timeframe, require_broker=require_broker)
     if len(candles_entry) < 35:
         return {"error": f"Insufficient {timeframe} candle history ({len(candles_entry)}). Need >= 35."}
 
@@ -946,21 +993,20 @@ def generate_compounding_ladder_setup(
     timeframe: str = "1h",
     use_pullback_limit: bool = True,
     pullback_discount_pips: float = 8.0,
-    strategy_mode: Literal["AUTO", "VALUE_ZONE_15M", "DONCHIAN_MOMENTUM_HYBRID_1H", "HIGH_VELOCITY_TOUCH_1H"] = "HIGH_VELOCITY_TOUCH_1H",
+    strategy_mode: str = "HIGH_VELOCITY_TOUCH",
     donchian_period: int = 10,
     rr_multiplier: float = 1.25,
     trend_filter_ema: int = 50,
     trigger_mode: str = "TOUCH",
     adx_min_threshold: Optional[float] = None,
     require_slope_alignment: bool = True,
+    runner_t2_multiplier: float = 3.0,
+    strategy_config: Optional[StrategyConfig] = None,
+    require_broker: bool = False,
 ) -> Dict[str, Any]:
     """
     Generate trade execution setup tailored specifically to the Compounding Ladder Plan.
-    
-    Supports:
-    - High-Velocity TOUCH (1H): Donchian 10 Touch + SuperTrend (10, 3.0) + 50 EMA with 1.25R fast target.
-    - Legacy 1H Hybrid: Donchian 15 Breakout + MACD Momentum with 200 EMA.
-    - Strategy 1 (15m/5m): High-frequency EMA 9/21 Value Zone Pullback with 8-pip limit discount entry.
+    Enforces strict typed StrategyConfig propagation for timeframe, trigger mode, and indicator parameters.
     """
     if ladder_manager is not None:
         ladder = ladder_manager
@@ -979,58 +1025,88 @@ def generate_compounding_ladder_setup(
     ladder_status = ladder.get_status()
     current_level = ladder_status["current_level"]
 
-    is_hybrid_1h = (timeframe == "1h" or strategy_mode in ("DONCHIAN_MOMENTUM_HYBRID_1H", "HIGH_VELOCITY_TOUCH_1H", "AUTO"))
+    cfg = strategy_config or StrategyConfig(
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy_mode=strategy_mode,
+        donchian_period=donchian_period,
+        rr_multiplier=rr_multiplier,
+        trend_filter_ema=trend_filter_ema,
+        trigger_mode=trigger_mode,
+        adx_min_threshold=adx_min_threshold,
+        require_slope_alignment=require_slope_alignment,
+        pullback_discount_pips=pullback_discount_pips if use_pullback_limit else 0.0,
+        use_pullback_limit=use_pullback_limit,
+        min_win_probability=min_win_probability,
+        runner_t2_multiplier=runner_t2_multiplier,
+    )
+    cfg.validate()
 
-    if is_hybrid_1h:
-        setup_data = generate_donchian_momentum_hybrid_setup(
-            symbol=symbol,
-            account_balance=ladder_status["current_balance"],
-            timeframe="1h",
-            donchian_period=donchian_period,
-            rr_multiplier=rr_multiplier,
-            trend_filter_ema=trend_filter_ema,
-            trigger_mode=trigger_mode,
-            adx_min_threshold=adx_min_threshold,
-            require_slope_alignment=require_slope_alignment,
-        )
-        if "error" in setup_data:
-            return setup_data
-        action = setup_data.get("action", "HOLD")
-        market_price = float(setup_data.get("entry_price", 0.0))
-        use_pullback_limit = False
-        pullback_discount_pips = 0.0
-    elif timeframe in ("5m", "15m") and strategy_mode == "VALUE_ZONE_15M":
+    effective_tf = cfg.timeframe.lower()
+    effective_mode = cfg.strategy_mode.upper()
+
+    if effective_mode == "VALUE_ZONE_15M" or (effective_tf == "15m" and "VALUE_ZONE" in effective_mode):
+        mode_used = "VALUE_ZONE_15M"
         setup_data = generate_intraday_value_zone_setup(
             symbol=symbol,
-            timeframe=timeframe,
-            pullback_discount_pips=pullback_discount_pips if use_pullback_limit else 0.0,
+            timeframe=effective_tf,
+            pullback_discount_pips=cfg.pullback_discount_pips if cfg.use_pullback_limit else 0.0,
         )
         if "error" in setup_data:
             return setup_data
         action = setup_data.get("action", "HOLD")
         market_price = float(setup_data.get("market_price", 0.0))
-    else:
-        # Fallback to multi-layer swing setup on higher timeframe
-        setup_data = generate_gold_trade_setup(symbol=symbol, timeframe=timeframe)
+        use_ladder_lots = True
+        is_hybrid = False
+    elif (
+        "DONCHIAN" in effective_mode
+        or "TOUCH" in effective_mode
+        or "HYBRID" in effective_mode
+        or effective_mode in ("AUTO", "FLAT_RISK_TOUCH", "COMPOUNDING_TOUCH")
+    ):
+        mode_used = f"DONCHIAN_{cfg.trigger_mode.upper()}_{effective_tf.upper()}"
+        setup_data = generate_donchian_momentum_hybrid_setup(
+            symbol=symbol,
+            account_balance=ladder_status["current_balance"],
+            timeframe=effective_tf,  # PROPERLY PASSES CONFIGURED TIMEFRAME (15m, 1h, etc.)
+            donchian_period=cfg.donchian_period,
+            rr_multiplier=cfg.rr_multiplier,
+            trend_filter_ema=cfg.trend_filter_ema,
+            trigger_mode=cfg.trigger_mode,
+            adx_min_threshold=cfg.adx_min_threshold,
+            require_slope_alignment=cfg.require_slope_alignment,
+            runner_t2_multiplier=cfg.runner_t2_multiplier,
+            require_broker=require_broker,
+        )
         if "error" in setup_data:
             return setup_data
         action = setup_data.get("action", "HOLD")
         market_price = float(setup_data.get("entry_price", 0.0))
+        use_ladder_lots = False
+        is_hybrid = True
+    else:
+        mode_used = f"SWING_{effective_tf.upper()}"
+        setup_data = generate_gold_trade_setup(symbol=symbol, timeframe=effective_tf)
+        if "error" in setup_data:
+            return setup_data
+        action = setup_data.get("action", "HOLD")
+        market_price = float(setup_data.get("entry_price", 0.0))
+        use_ladder_lots = False
+        is_hybrid = False
 
     # Calculate bracket order specs with dynamic ATR stop loss and compounding matrix lots.
-    use_ladder_lots = False if is_hybrid_1h else True
     min_sl = 500.0 if "BTC" in symbol.upper() else (20.0 if "ETH" in symbol.upper() else 8.0)
     bracket_order = ladder.calculate_bracket_order(
         current_price=market_price,
         direction=action if action in ("BUY", "SELL") else "BUY",
         symbol=symbol,
-        use_pullback_limit=use_pullback_limit,
-        pullback_discount_pips=pullback_discount_pips,
+        use_pullback_limit=cfg.use_pullback_limit,
+        pullback_discount_pips=cfg.pullback_discount_pips,
         atr=setup_data.get("atr"),
         use_atr_stops=True,
         min_sl_pts=min_sl,
         use_ladder_lots=use_ladder_lots,
-        rr_ratio=rr_multiplier if is_hybrid_1h else 1.33,
+        rr_ratio=cfg.rr_multiplier if is_hybrid else 1.33,
     )
 
     if action not in ("BUY", "SELL"):
@@ -1040,6 +1116,11 @@ def generate_compounding_ladder_setup(
             "symbol": symbol.upper(),
             "level": current_level,
             "market_price": market_price,
+            "effective_strategy_mode": mode_used,
+            "effective_timeframe": effective_tf,
+            "effective_donchian_period": cfg.donchian_period,
+            "effective_trigger_mode": cfg.trigger_mode,
+            "strategy_hash": cfg.get_hash(),
             "reason": "; ".join(setup_data.get("reasons", ["Waiting for actionable compounding setup trigger"])),
             "setup_details": setup_data,
             "ladder_status": ladder_status,
@@ -1049,28 +1130,30 @@ def generate_compounding_ladder_setup(
         }
 
     # Machine Learning / Empirical Gatekeeper
-    win_prob = 0.620 if is_hybrid_1h else 0.612
+    win_prob = 0.0
     ml_result = None
     try:
         from gold_trader.core.ml_filter import GoldMLPredictor
         predictor = GoldMLPredictor(symbol=symbol)
-        candles_entry = fetch_gold_candles(symbol, period="1mo", interval=timeframe)
+        candles_entry = fetch_gold_candles(symbol, period="1mo", interval=effective_tf, require_broker=require_broker)
         if len(candles_entry) >= 100:
             ml_result = predictor.predict_trade_probability(
                 candles_entry,
                 direction=action,
-                min_probability_threshold=min_win_probability,
+                min_probability_threshold=cfg.min_win_probability,
             )
-            win_prob = ml_result.get("probability_win", win_prob)
+            win_prob = float(ml_result.get("probability_win", 0.0))
+        else:
+            ml_result = {"status": "INSUFFICIENT_DATA", "error": f"Candle history ({len(candles_entry)}) < 100 bars", "probability_win": 0.0}
     except Exception as e:
-        ml_result = {"note": f"ML heuristic fallback used: {e}", "probability_win": win_prob}
+        ml_result = {"status": "ERROR", "error": f"ML prediction error: {e}", "probability_win": 0.0}
 
-    is_high_conviction = (win_prob >= min_win_probability)
+    is_high_conviction = (win_prob >= cfg.min_win_probability)
 
     default_setup_name = (
-        "1H Donchian + Momentum Hybrid Compounding"
-        if is_hybrid_1h
-        else f"{timeframe} EMA 9/21 Value Zone Pullback"
+        f"{effective_tf.upper()} Donchian {cfg.donchian_period} + Momentum Hybrid Compounding"
+        if is_hybrid
+        else f"{effective_tf} EMA 9/21 Value Zone Pullback"
     )
 
     if not is_high_conviction:
@@ -1083,8 +1166,13 @@ def generate_compounding_ladder_setup(
             "entry_price": market_price,
             "candle_time": setup_data.get("candle_time"),
             "bias": setup_data.get("bias", "NEUTRAL"),
+            "effective_strategy_mode": mode_used,
+            "effective_timeframe": effective_tf,
+            "effective_donchian_period": cfg.donchian_period,
+            "effective_trigger_mode": cfg.trigger_mode,
+            "strategy_hash": cfg.get_hash(),
             "setup_name": setup_data.get("setup_name", default_setup_name),
-            "reason": f"Predicted win probability ({win_prob:.1%}) is below threshold ({min_win_probability:.1%}). Account risk preserved.",
+            "reason": f"Predicted win probability ({win_prob:.1%}) is below threshold ({cfg.min_win_probability:.1%}). Account risk preserved.",
             "win_probability": win_prob,
             "ml_evaluation": ml_result,
             "ladder_status": ladder_status,
@@ -1098,6 +1186,11 @@ def generate_compounding_ladder_setup(
         "action": action,
         "symbol": symbol.upper(),
         "level": current_level,
+        "effective_strategy_mode": mode_used,
+        "effective_timeframe": effective_tf,
+        "effective_donchian_period": cfg.donchian_period,
+        "effective_trigger_mode": cfg.trigger_mode,
+        "strategy_hash": cfg.get_hash(),
         "order_type": bracket_order["order_type"],
         "market_price": bracket_order["market_price"],
         "entry_price": bracket_order["entry_price"],

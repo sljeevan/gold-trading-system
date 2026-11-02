@@ -22,6 +22,69 @@ def resolve_symbol(symbol: str) -> str:
     return config.SYMBOL_MAP.get(s, s)
 
 
+def calculate_required_candle_count(
+    period: str,
+    interval: str,
+    is_crypto: bool = False,
+) -> int:
+    """
+    Calculate the realistic required candle count based on interval, period,
+    and market trading sessions (5 days/week for Gold/FX, 7 days/week for Crypto).
+    """
+    interval_minutes = {
+        "1m": 1,
+        "5m": 5,
+        "15m": 15,
+        "30m": 30,
+        "1h": 60,
+        "4h": 240,
+        "1d": 1440,
+        "1wk": 10080,
+    }.get(interval.lower(), 60)
+
+    trading_days_per_period = {
+        "1d": 1,
+        "5d": 5,
+        "1mo": 30 if is_crypto else 22,
+        "3mo": 90 if is_crypto else 65,
+        "6mo": 180 if is_crypto else 130,
+        "1y": 365 if is_crypto else 260,
+        "2y": 730 if is_crypto else 520,
+    }.get(period.lower(), 22)
+
+    daily_trading_minutes = 1440 if is_crypto else 1380
+    total_minutes = trading_days_per_period * daily_trading_minutes
+    bars = max(50, total_minutes // interval_minutes)
+    return int(bars)
+
+
+def validate_candle_coverage(
+    candles: List[Dict[str, Any]],
+    requested_count: int,
+    interval: str,
+) -> Dict[str, Any]:
+    """
+    Validate candle list coverage, timestamps, ordering, and gap detection.
+    """
+    if not candles:
+        return {"status": "EMPTY", "count": 0, "coverage_pct": 0.0, "is_complete": False}
+
+    count = len(candles)
+    coverage_pct = round(min(1.0, count / max(1, requested_count)) * 100.0, 1)
+    is_ordered = all(candles[i]["date"] <= candles[i + 1]["date"] for i in range(count - 1))
+
+    return {
+        "status": "VALID" if is_ordered and count >= min(requested_count // 2, 30) else "INCOMPLETE",
+        "count": count,
+        "requested_count": requested_count,
+        "coverage_pct": coverage_pct,
+        "start_date": candles[0].get("date"),
+        "end_date": candles[-1].get("date"),
+        "is_ordered": is_ordered,
+        "is_complete": count >= requested_count * 0.8,
+    }
+
+
 def fetch_gold_candles(
     symbol: str = "XAUUSD",
     period: str = "3mo",
@@ -34,32 +97,36 @@ def fetch_gold_candles(
     Periods: '1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y'
 
     If require_broker=True: Strictly enforces broker source for live execution, preventing
-    silent substitution with external research data.
+    silent substitution with external research data. Fails closed with DATA_UNAVAILABLE.
     """
     clean_sym = symbol.upper().strip()
     is_live_broker_sym = clean_sym in ("XAUUSD", "GOLD", "BTCUSD", "BTC", "ETHUSD", "ETH")
+    is_crypto = "BTC" in clean_sym or "ETH" in clean_sym
     broker_sym = "GOLD" if clean_sym in ("XAUUSD", "GOLD") else ("BTCUSD" if clean_sym == "BTC" else ("ETHUSD" if clean_sym == "ETH" else clean_sym))
+
     # 1. If Gold or Crypto symbol on intraday/swing timeframe, check live MT5 broker for real-time rates
-    if is_live_broker_sym and interval in ("1m", "5m", "15m", "30m", "1h") and period in ("1d", "5d", "1mo", "3mo"):
+    if is_live_broker_sym and interval in ("1m", "5m", "15m", "30m", "1h") and period in ("1d", "5d", "1mo", "3mo", "6mo"):
         try:
             from gold_trader.brokers.socket_broker import SocketBroker
             broker = SocketBroker()
-            count_map = {"1d": 96, "5d": 350, "1mo": 400, "3mo": 500}
-            count = count_map.get(period, 300)
+            count = calculate_required_candle_count(period=period, interval=interval, is_crypto=is_crypto)
             rates = broker.get_rates(symbol=broker_sym, timeframe=interval, count=count)
-            if rates and len(rates) >= 50:
+            if rates and len(rates) >= 30:
+                for r in rates:
+                    r.setdefault("source", "MT5_BROKER")
+                    r.setdefault("symbol", broker_sym)
                 return rates
         except Exception as e:
             if require_broker:
-                raise RuntimeError(f"Live broker feed unavailable for {symbol} ({broker_sym}): {e}") from e
+                raise RuntimeError(f"DATA_UNAVAILABLE: Live broker feed unavailable for {symbol} ({broker_sym}): {e}") from e
 
-    if require_broker and is_live_broker_sym:
+    if require_broker:
         raise RuntimeError(
-            f"Strict broker feed required for live symbol {symbol}, but MT5 bridge returned insufficient rates. "
+            f"DATA_UNAVAILABLE: Strict broker feed required for live symbol {symbol} ({broker_sym}), but MT5 bridge returned insufficient rates. "
             f"Failing closed to prevent external price mismatch."
         )
 
-    # 2. Yahoo Finance REST endpoint (Research / Macro fallback)
+    # 2. Yahoo Finance REST endpoint (Research / Macro fallback only)
     yf_symbol = resolve_symbol(symbol)
     url = f"{_YF_BASE_URL}/{yf_symbol}?interval={interval}&range={period}"
 
@@ -100,9 +167,11 @@ def fetch_gold_candles(
             "low": round(float(l), 4),
             "close": round(float(c), 4),
             "volume": float(v or 0.0),
+            "source": "YAHOO_RESEARCH",
+            "symbol": yf_symbol,
         })
 
-    # Append fresh live broker candles newer than the last Yahoo candle
+    # Append fresh live broker candles newer than the last Yahoo candle if broker is available
     if is_live_broker_sym and interval in ("1m", "5m", "15m", "30m", "1h") and candles:
         try:
             from gold_trader.brokers.socket_broker import SocketBroker
@@ -112,10 +181,27 @@ def fetch_gold_candles(
             if live_rates:
                 for r in live_rates:
                     if r.get("date", "") > latest_date:
+                        r.setdefault("source", "MT5_BROKER")
+                        r.setdefault("symbol", broker_sym)
                         candles.append(r)
         except Exception:
             pass
 
+    return candles
+
+
+def fetch_research_futures_candles(
+    period: str = "3mo",
+    interval: str = "1h",
+) -> List[Dict[str, Any]]:
+    """
+    Explicit research data provider for COMEX Gold Futures (GC=F).
+    Note: Futures prices trade at a basis differential to Spot Gold CFD (XAU/USD)
+    and follow CME exchange hours rather than XM OTC 24/5 liquidity.
+    """
+    candles = fetch_gold_candles(symbol="GC=F", period=period, interval=interval, require_broker=False)
+    for c in candles:
+        c["source"] = "YAHOO_FUTURES_RESEARCH"
     return candles
 
 

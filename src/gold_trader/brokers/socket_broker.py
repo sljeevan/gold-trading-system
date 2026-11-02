@@ -15,6 +15,31 @@ from gold_trader.config import config
 from gold_trader.types import AccountInfo, OrderResult, Position
 
 
+class BrokerError(RuntimeError):
+    """Base exception for broker operations."""
+    pass
+
+
+class BrokerUnavailableError(BrokerError, ConnectionError):
+    """Raised when broker communication fails or service is unavailable."""
+    pass
+
+
+class BrokerPositionsUnavailableError(BrokerUnavailableError):
+    """Raised when open positions query cannot be verified."""
+    pass
+
+
+class BrokerOrdersUnavailableError(BrokerUnavailableError):
+    """Raised when pending orders query cannot be verified."""
+    pass
+
+
+class BrokerAccountUnavailableError(BrokerUnavailableError):
+    """Raised when account information cannot be verified."""
+    pass
+
+
 class SocketBroker(BaseBroker):
     """
     Direct TCP Socket Broker for XM MT5.
@@ -76,7 +101,13 @@ class SocketBroker(BaseBroker):
 
     def connect(self) -> bool:
         resp = self._send_command({"command": "PING"})
-        return resp.get("status") == "SUCCESS" or "balance" in resp
+        if resp.get("status") == "SUCCESS":
+            return bool(resp.get("mt5_connected", True))
+        return "balance" in resp
+
+    def get_health(self) -> Dict[str, Any]:
+        """Query socket and MT5 terminal health separately."""
+        return self._send_command({"command": "HEALTH"})
 
     def get_account_info(self) -> AccountInfo:
         badge = "LIVE ⚠️ REAL FUNDS" if self.account_type == "live" else "DEMO"
@@ -117,8 +148,9 @@ class SocketBroker(BaseBroker):
         })
         
         if resp.get("status") != "SUCCESS" or "positions" not in resp:
+            err_code = resp.get("error_code", "MT5_POSITIONS_UNAVAILABLE")
             err = resp.get("message", "Bridge communication failed or invalid response")
-            raise ConnectionError(f"Failed to fetch open positions from MT5 Bridge: {err}")
+            raise BrokerPositionsUnavailableError(f"[{err_code}] Failed to fetch open positions from MT5 Bridge: {err}")
 
         raw_list = resp.get("positions", [])
         positions: List[Position] = []
@@ -193,6 +225,47 @@ class SocketBroker(BaseBroker):
             except Exception as recon_err:
                 msg += f" (Reconciliation error: {recon_err})"
 
+        if status == "EMERGENCY_PROTECTION_FAILED":
+            return {
+                "status": "EMERGENCY_PROTECTION_FAILED",
+                "ticket": ticket,
+                "symbol": actual_symbol,
+                "action": side,
+                "lots": lots,
+                "price": filled_or_target_price,
+                "sl": None,
+                "tp": None,
+                "message": msg,
+                "lockout": True,
+                "emergency_closed": resp.get("emergency_closed", False),
+                "timestamp": now_str,
+            }
+
+        # Secondary client-side verification: if SL was requested, it must be present
+        if status == "SUCCESS" and sl is not None and float(sl) > 0 and (actual_sl is None or float(actual_sl) <= 0):
+            emergency_msg = f"SAFETY VIOLATION: Position #{ticket} filled but lacks active Stop Loss! Invoking emergency close."
+            em_closed = False
+            if ticket:
+                try:
+                    close_res = self.close_position(ticket=ticket)
+                    em_closed = (close_res.get("status") == "SUCCESS")
+                except Exception as em_err:
+                    emergency_msg += f" (Emergency close attempt error: {em_err})"
+            return {
+                "status": "EMERGENCY_PROTECTION_FAILED",
+                "ticket": ticket,
+                "symbol": actual_symbol,
+                "action": side,
+                "lots": lots,
+                "price": filled_or_target_price,
+                "sl": None,
+                "tp": None,
+                "message": emergency_msg,
+                "lockout": True,
+                "emergency_closed": em_closed,
+                "timestamp": now_str,
+            }
+
         return {
             "status": "SUCCESS" if status == "SUCCESS" else "REJECTED",
             "ticket": ticket,
@@ -246,6 +319,24 @@ class SocketBroker(BaseBroker):
         status = resp.get("status", "ERROR")
         price = float(resp.get("price", 0.0))
         closed_lots = float(resp.get("lots", lots or 0.0))
+        msg = resp.get("message", f"Close {status}")
+
+        # Post-timeout close reconciliation
+        if status != "SUCCESS" and ("timeout" in str(msg).lower() or "communication" in str(msg).lower()):
+            try:
+                open_pos = self.get_open_positions()
+                matching = [p for p in open_pos if str(p.get("ticket")) == str(ticket)]
+                if not matching:
+                    status = "SUCCESS"
+                    msg = f"Close verified via position book post-timeout (Ticket #{ticket})"
+                else:
+                    deals = self.get_deal_history(ticket=ticket)
+                    if deals.get("status") == "SUCCESS" and deals.get("deals"):
+                        status = "SUCCESS"
+                        msg = f"Close verified via deal history post-timeout (Ticket #{ticket})"
+            except Exception as recon_err:
+                msg += f" (Close reconciliation error: {recon_err})"
+
         return {
             "status": "SUCCESS" if status == "SUCCESS" else "ERROR",
             "ticket": ticket,
@@ -255,7 +346,7 @@ class SocketBroker(BaseBroker):
             "price": price,
             "sl": None,
             "tp": None,
-            "message": resp.get("message", f"Close {status}"),
+            "message": msg,
             "timestamp": now_str,
         }
 
@@ -281,9 +372,11 @@ class SocketBroker(BaseBroker):
             "command": "GET_PENDING_ORDERS",
             "symbol": symbol or "",
         })
-        if resp.get("status") == "SUCCESS" and "orders" in resp:
-            return resp["orders"]
-        return []
+        if resp.get("status") != "SUCCESS" or "orders" not in resp:
+            err_code = resp.get("error_code", "MT5_ORDERS_UNAVAILABLE")
+            err = resp.get("message", "Bridge communication failed or invalid response")
+            raise BrokerOrdersUnavailableError(f"[{err_code}] Failed to fetch pending orders from MT5 Bridge: {err}")
+        return resp.get("orders", [])
 
     def cancel_order(self, ticket: str) -> Dict[str, Any]:
         """Cancel an active pending order."""
