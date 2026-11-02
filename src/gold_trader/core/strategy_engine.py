@@ -36,9 +36,11 @@ def calculate_lot_size(
     entry_price: float,
     stop_loss_price: float,
     contract_size: float = 100.0,  # 1 standard lot of XAUUSD = 100 oz
+    max_risk_multiplier: float = 1.25,
 ) -> float:
     """
-    Calculate risk-adjusted lot size so that losing the trade costs exactly `risk_pct`% of account.
+    Calculate risk-adjusted lot size so that losing the trade costs approximately `risk_pct`% of account.
+    Protects against lot rounding inflation beyond the allowable cash risk budget.
     """
     risk_amount = account_balance * (risk_pct / 100.0)
     stop_distance = abs(entry_price - stop_loss_price)
@@ -47,8 +49,19 @@ def calculate_lot_size(
 
     # Standard XAUUSD: 1 Lot * $1 price move = $100 PnL
     lots = risk_amount / (stop_distance * contract_size)
-    # Clamp to min 0.01 micro-lot and round to 2 decimals
-    return max(0.01, round(lots, 2))
+    rounded = round(lots, 2)
+    if rounded < 0.01:
+        worst_case_risk = 0.01 * stop_distance * contract_size
+        max_allowed_risk = risk_amount * max_risk_multiplier
+        if worst_case_risk > max_allowed_risk:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Risk inflation warning: Minimum lot (0.01) worst-case risk is $%.2f, exceeding budget $%.2f by >%.0f%%.",
+                worst_case_risk, risk_amount, (max_risk_multiplier - 1.0) * 100
+            )
+        return 0.01
+
+    return max(0.01, rounded)
 
 
 def generate_gold_trade_setup(
@@ -697,14 +710,24 @@ def generate_donchian_momentum_hybrid_setup(
         if trigger_mode == "TOUCH":
             is_bull_trigger = (h >= prev_d_up or c >= prev_d_up) and st_dir == 1 and macro_bullish and rsi_val <= 75.0
         else:
-            is_bull_trigger = c > prev_d_up and c > o and st_dir == 1 and macro_bullish and rsi_val <= 75.0
+            # Close-confirmed Breakout: strictly evaluate completed candle [-2] against prior channel [-3]
+            comp_c = closes[-2] if n >= 3 else c
+            comp_o = opens[-2] if n >= 3 else o
+            comp_band_up = dc["upper"][-3] if n >= 3 else prev_d_up
+            comp_st = st["direction"][-2] if (n >= 3 and st["direction"][-2] is not None) else st_dir
+            is_bull_trigger = comp_c > comp_band_up and comp_c > comp_o and comp_st == 1 and macro_bullish and rsi_val <= 75.0
 
         # Bearish Breakdown / Touch Trigger
         is_bear_trigger = False
         if trigger_mode == "TOUCH":
             is_bear_trigger = (l <= prev_d_low or c <= prev_d_low) and st_dir == -1 and macro_bearish and rsi_val >= 25.0
         else:
-            is_bear_trigger = c < prev_d_low and c < o and st_dir == -1 and macro_bearish and rsi_val >= 25.0
+            # Close-confirmed Breakout: strictly evaluate completed candle [-2] against prior channel [-3]
+            comp_c = closes[-2] if n >= 3 else c
+            comp_o = opens[-2] if n >= 3 else o
+            comp_band_low = dc["lower"][-3] if n >= 3 else prev_d_low
+            comp_st = st["direction"][-2] if (n >= 3 and st["direction"][-2] is not None) else st_dir
+            is_bear_trigger = comp_c < comp_band_low and comp_c < comp_o and comp_st == -1 and macro_bearish and rsi_val >= 25.0
 
         # ADX regime check
         if not adx_ok:

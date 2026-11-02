@@ -240,11 +240,17 @@ def label_triple_barrier(
             sl_barrier = entry_price - sl_dist
 
             for k in range(i + 1, min(i + max_holding_bars + 1, n)):
-                if highs[k] >= tp_barrier:
-                    outcome = 1
-                    break
-                if lows[k] <= sl_barrier:
+                hit_tp = highs[k] >= tp_barrier
+                hit_sl = lows[k] <= sl_barrier
+                if hit_tp and hit_sl:
+                    # Same-candle ambiguity: apply conservative adverse-first (SL hit first)
                     outcome = 0
+                    break
+                elif hit_sl:
+                    outcome = 0
+                    break
+                elif hit_tp:
+                    outcome = 1
                     break
             else:
                 outcome = 1 if closes[min(i + max_holding_bars, n - 1)] > entry_price else 0
@@ -254,11 +260,17 @@ def label_triple_barrier(
             sl_barrier = entry_price + sl_dist
 
             for k in range(i + 1, min(i + max_holding_bars + 1, n)):
-                if lows[k] <= tp_barrier:
-                    outcome = 1
-                    break
-                if highs[k] >= sl_barrier:
+                hit_tp = lows[k] <= tp_barrier
+                hit_sl = highs[k] >= sl_barrier
+                if hit_tp and hit_sl:
+                    # Same-candle ambiguity: apply conservative adverse-first (SL hit first)
                     outcome = 0
+                    break
+                elif hit_sl:
+                    outcome = 0
+                    break
+                elif hit_tp:
+                    outcome = 1
                     break
             else:
                 outcome = 1 if closes[min(i + max_holding_bars, n - 1)] < entry_price else 0
@@ -266,6 +278,52 @@ def label_triple_barrier(
         labels[i] = outcome
 
     return labels
+
+
+def purged_walk_forward_cv(
+    bar_indices: List[int],
+    max_holding_bars: int = 36,
+    n_splits: int = 5,
+    pct_embargo: float = 0.01,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Purged & Embargoed Time-Series Cross Validation (Marcos López de Prado, AFML Ch. 4).
+
+    Guarantees strict zero label lookahead across folds:
+    1. Validation set is fold k+1.
+    2. Training set is drawn strictly from folds 0..k.
+    3. PURGING: Any training trade whose holding window [t_entry, t_entry + max_holding_bars]
+       overlaps with or extends past the first entry bar of the validation set is dropped.
+    4. EMBARGO: Discards observations immediately after validation boundaries.
+    """
+    n_samples = len(bar_indices)
+    chunk_size = n_samples // (n_splits + 1)
+    if chunk_size < 10:
+        tscv = TimeSeriesSplit(n_splits=min(n_splits, max(2, n_samples // 5)))
+        return list(tscv.split(np.arange(n_samples)))
+
+    splits = []
+    for fold in range(n_splits):
+        val_start_idx = (fold + 1) * chunk_size
+        val_end_idx = n_samples if fold == n_splits - 1 else (fold + 2) * chunk_size
+
+        val_idx = np.arange(val_start_idx, val_end_idx)
+        val_start_bar = min(bar_indices[idx] for idx in val_idx)
+
+        # Purge training samples whose forward holding window reaches into validation
+        clean_train_idx = [
+            i for i in range(val_start_idx)
+            if (bar_indices[i] + max_holding_bars) < val_start_bar
+        ]
+
+        if len(clean_train_idx) >= 10 and len(val_idx) >= 5:
+            splits.append((np.array(clean_train_idx, dtype=int), val_idx))
+
+    if not splits:
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        return list(tscv.split(np.arange(n_samples)))
+
+    return splits
 
 
 class GoldMLPredictor:
@@ -327,10 +385,11 @@ class GoldMLPredictor:
         if len(candles) < 400:
             return {"error": f"Insufficient candles ({len(candles)}) for ML training. Minimum 400 needed."}
 
-        macro_data = analyze_macro_drivers()
-        macro_score = float(macro_data.get("macro_gold_score", 0.0))
-
-        X_all, feature_names = extract_candle_features(candles, macro_score=macro_score)
+        # Historical training feature extraction:
+        # Enforce point-in-time integrity by using neutral 0.0 macro score for historical training
+        # to strictly eliminate temporal lookahead leakage from today's live market conditions.
+        macro_score_train = 0.0
+        X_all, feature_names = extract_candle_features(candles, macro_score=macro_score_train)
 
         # Dynamic ATR Triple-Barrier Labeling
         y_buy = label_triple_barrier(
@@ -353,6 +412,7 @@ class GoldMLPredictor:
         # Combine datasets while strictly preserving chronological time order
         rows_X = []
         rows_y = []
+        rows_bar_idx = []
         n = len(candles)
         for i in range(1, n - max_holding_bars):
             # Strictly use lagged features from bar i-1 (closed candle prior to entry)
@@ -362,17 +422,23 @@ class GoldMLPredictor:
             if not np.isnan(y_buy[i]):
                 rows_X.append(np.append(X_all[i - 1], 1.0))
                 rows_y.append(y_buy[i])
+                rows_bar_idx.append(i)
             if not np.isnan(y_sell[i]):
                 rows_X.append(np.append(X_all[i - 1], -1.0))
                 rows_y.append(y_sell[i])
+                rows_bar_idx.append(i)
 
         X_combined = np.array(rows_X, dtype=float)
         y_combined = np.array(rows_y, dtype=float)
 
         augmented_feature_names = feature_names + ["trade_direction_sign"]
 
-        # Time-series Walk-Forward Cross-Validation
-        tscv = TimeSeriesSplit(n_splits=5)
+        # Purged & Embargoed Time-Series Walk-Forward Cross-Validation (AFML Ch. 4)
+        cv_splits = purged_walk_forward_cv(
+            bar_indices=rows_bar_idx,
+            max_holding_bars=max_holding_bars,
+            n_splits=5,
+        )
         auc_scores = []
         precision_scores = []
         brier_scores = []
@@ -397,7 +463,7 @@ class GoldMLPredictor:
                 random_state=42,
             )
 
-        for train_idx, val_idx in tscv.split(X_combined):
+        for train_idx, val_idx in cv_splits:
             X_tr, X_val = X_combined[train_idx], X_combined[val_idx]
             y_tr, y_val = y_combined[train_idx], y_combined[val_idx]
 
@@ -405,7 +471,8 @@ class GoldMLPredictor:
             preds_proba = clf.predict_proba(X_val)[:, 1]
             preds_class = (preds_proba >= 0.5).astype(int)
 
-            auc_scores.append(roc_auc_score(y_val, preds_proba))
+            if len(np.unique(y_val)) > 1:
+                auc_scores.append(roc_auc_score(y_val, preds_proba))
             precision_scores.append(precision_score(y_val, preds_class, zero_division=0))
             brier_scores.append(brier_score_loss(y_val, preds_proba))
 

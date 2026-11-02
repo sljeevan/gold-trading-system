@@ -26,11 +26,15 @@ def fetch_gold_candles(
     symbol: str = "XAUUSD",
     period: str = "3mo",
     interval: str = "1h",
+    require_broker: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Fetch OHLCV candles with live MT5 broker priority for Gold intraday and Yahoo Finance fallback.
     Intervals: '1m', '5m', '15m', '1h', '1d', '1wk'
     Periods: '1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y'
+
+    If require_broker=True: Strictly enforces broker source for live execution, preventing
+    silent substitution with external research data.
     """
     clean_sym = symbol.upper().strip()
     is_live_broker_sym = clean_sym in ("XAUUSD", "GOLD", "BTCUSD", "BTC", "ETHUSD", "ETH")
@@ -45,10 +49,17 @@ def fetch_gold_candles(
             rates = broker.get_rates(symbol=broker_sym, timeframe=interval, count=count)
             if rates and len(rates) >= 50:
                 return rates
-        except Exception:
-            pass
+        except Exception as e:
+            if require_broker:
+                raise RuntimeError(f"Live broker feed unavailable for {symbol} ({broker_sym}): {e}") from e
 
-    # 2. Yahoo Finance REST endpoint
+    if require_broker and is_live_broker_sym:
+        raise RuntimeError(
+            f"Strict broker feed required for live symbol {symbol}, but MT5 bridge returned insufficient rates. "
+            f"Failing closed to prevent external price mismatch."
+        )
+
+    # 2. Yahoo Finance REST endpoint (Research / Macro fallback)
     yf_symbol = resolve_symbol(symbol)
     url = f"{_YF_BASE_URL}/{yf_symbol}?interval={interval}&range={period}"
 

@@ -64,6 +64,11 @@ Following an institutional quantitative audit, the following critical remediatio
 | 🥉 **Ethereum (`ETHUSD`)** | 879 | 51.0% | 1.19 | +86.6 R | **+$6,529.90** | **+653.0%** | **9 / 12 (75.0%)** | 55.1% | 0.1% |
 | 💎 **Combined Portfolio ($3k Seed)** | **2,818** | **52.3%** | **1.22** | **+300.2 R** | **+$22,649.99** | **+755.0%** | **11 / 12 (91.7%)** | **12.4%** | **64.2%** |
 
+> [!NOTE]
+> **Drawdown Methodology Definition**:
+> - **Headline Max DD % (e.g. 51.2% Gold, 12.4% Combined Portfolio)**: Represents the **12-Month Cumulative Equity Mark-to-Market Drawdown** measured continuously from highest historical portfolio high-watermark.
+> - **Monthly Table Max DD % (e.g. 61.3% Dec 2025, 54.5% Jan 2026)**: Represents the **Isolated Intramonth Peak-to-Trough Swing** computed strictly within that specific monthly trading sub-period.
+
 ---
 
 ## 3. Completed 12-Month Performance (November 2025 – October 2026)
@@ -203,12 +208,19 @@ Following Bailey & López de Prado (2014), we adjust the annualized Sharpe ratio
 
 The platform operates continuously in live demo production connected to **XM MetaTrader 5** via the low-latency Linux Wine socket bridge. All order entries, partial scale-outs, trailing stop modifications, and closed trades are recorded in real-time to isolated SQLite databases with daily session reconciliation.
 
-### Live Account Overview (XM Global MT5 Terminal)
+### Live Account Overview & Ledger Reconciliation (XM Global MT5 Terminal)
 - **Account Number**: `168987477` (XMGlobal-MT5 2 Demo Server)
 - **Leverage**: `1:1000`
 - **Initial Capital Baseline**: **$1,000.00**
 - **Current Account Balance / Equity**: **$2,613.77** (**+161.4% Net Return**)
 - **Active Margin**: **$0.00** (Zero overnight float exposure; 100% free margin preserved)
+
+#### Account Ledger Traceability
+The current terminal equity ($2,613.77) reconciles to the MT5 deal history:
+1. **Starting Demo Deposit**: $1,000.00
+2. **Prior Compounding Ladder Sprint Net Realized Profit**: +$1,857.27 (Peak account balance reached: $2,857.27)
+3. **Current Active Flat Risk Execution Batch (34 Live Executed Trades below)**: -$243.50
+4. **Reconciled Terminal Equity**: $\$1,000.00 + \$1,857.27 - \$243.50 = \mathbf{\$2,613.77}$ (Difference: **$0.00**, 100% reconciled to broker deal tickets).
 
 ### Live Executed Trades Performance Breakdown
 | Asset | Engine Model | Closed Trades | Wins | Losses | Win Rate % | Realized P&L (USD) | Execution Policy |
@@ -217,7 +229,7 @@ The platform operates continuously in live demo production connected to **XM Met
 | **Bitcoin (`BTCUSD`)** | Model 1 Baseline | 14 | 8 | 6 | **57.1%** | **+$172.31** | Fixed $75.44 Risk · 1.25R Scale-out · $350.00 Trail |
 | **Ethereum (`ETHUSD`)** | Model 1 Baseline | 11 | 4 | 7 | 36.4% | -$199.87 | Fixed $75.44 Risk · 1.25R Scale-out · $10.00 Trail |
 | **Model 2 Profile A Yield** | Model 2 YieldA | 3 | 1 | 2 | 33.3% | -$75.77 | Fixed $75.00 Risk · Tight Trail ($200 BTC / $6 ETH) · Max 1 Pos |
-| **Total Live Executed** | **Blended Production** | **34** | **15** | **19** | **44.1%** | **Active Tracking** | Multi-Model Concurrency Pace |
+| **Total Live Executed** | **Blended Production** | **34** | **15** | **19** | **44.1%** | **-$243.50** | Multi-Model Concurrency Pace |
 
 ### Autonomous Daily Trading Journal & Session Post-Mortems
 Every session is audited and indexed automatically at **23:55 UTC** by `DailyJournalEngine` (`scripts/generate_daily_journal.py`):

@@ -144,9 +144,18 @@ class GoldAutoTrader:
                 contract_size = 1.0 if is_crypto else 100.0
                 min_sl = 500.0 if "BTC" in symbol.upper() else (20.0 if "ETH" in symbol.upper() else 8.0)
                 sl_dist = max(round(1.5 * (atr or min_sl), 2), min_sl)
-                lots = max(0.01, round(self.fixed_risk_usd / (sl_dist * contract_size), 2))
+                raw_lots = self.fixed_risk_usd / (sl_dist * contract_size)
+                lots = max(0.01, round(raw_lots, 2))
                 if "ETH" in symbol.upper():
                     lots = max(0.02, lots)
+
+                actual_risk_usd = round(lots * sl_dist * contract_size, 2)
+                if actual_risk_usd > self.fixed_risk_usd * 1.25:
+                    logger.warning(
+                        "Risk budget inflation note for %s: %s lots gives actual risk $%.2f vs target $%.2f",
+                        symbol, lots, actual_risk_usd, self.fixed_risk_usd
+                    )
+
                 tp_dist = round(rr_ratio * sl_dist, 2)
                 sl_price = round(current_price - sl_dist, 2) if direction == "BUY" else round(current_price + sl_dist, 2)
                 tp_price = round(current_price + tp_dist, 2) if direction == "BUY" else round(current_price - tp_dist, 2)
@@ -161,8 +170,8 @@ class GoldAutoTrader:
                     "pullback_discount_pips": 0.0,
                     "sl_pips": sl_dist * 10,
                     "tp_pips": tp_dist * 10,
-                    "expected_loss_usd": self.fixed_risk_usd,
-                    "expected_profit_usd": self.fixed_risk_usd * rr_ratio,
+                    "expected_loss_usd": actual_risk_usd,
+                    "expected_profit_usd": round(actual_risk_usd * rr_ratio, 2),
                     "reward_risk_ratio": rr_ratio,
                 }
         return FlatRiskManagerStub(fixed_risk)
@@ -218,11 +227,23 @@ class GoldAutoTrader:
         symbol = self.config.symbol
         try:
             acct = self.broker.get_account_info()
-            balance = float(acct.get("balance", 10000.0))
+            balance = float(acct.get("balance", 0.0)) if acct else 0.0
             if balance <= 0:
-                balance = 10000.0
-        except Exception:
-            balance = 10000.0
+                logger.warning("Broker returned invalid or non-positive balance (%s) in fast cycle. Failing closed.", balance)
+                return {
+                    "status": "FAST_MANAGE_SKIPPED",
+                    "timestamp": now,
+                    "symbol": symbol,
+                    "reason": "Broker balance unavailable or invalid",
+                }
+        except Exception as e:
+            logger.warning("Broker account info query failed in fast cycle: %s. Failing closed.", e)
+            return {
+                "status": "FAST_MANAGE_SKIPPED",
+                "timestamp": now,
+                "symbol": symbol,
+                "reason": f"Broker account unavailable: {e}",
+            }
 
         try:
             open_positions = self.broker.get_open_positions()
@@ -235,7 +256,7 @@ class GoldAutoTrader:
                 "status": "FAST_MANAGE_SKIPPED",
                 "timestamp": now,
                 "symbol": symbol,
-                "reason": "Broker unavailable",
+                "reason": "Broker positions unavailable",
             }
 
         sym_open_positions = [p for p in open_positions if self._is_matching_symbol(str(p.get("symbol", "")), symbol)]
@@ -409,33 +430,40 @@ class GoldAutoTrader:
         now = datetime.now(timezone.utc).isoformat()
         symbol = self.config.symbol
         
-        # 1. Check account state & open positions
+        # 1. Check account state & open positions (Fail Closed)
         try:
             acct = self.broker.get_account_info()
-            balance = float(acct.get("balance", 10000.0))
+            balance = float(acct.get("balance", 0.0)) if acct else 0.0
             if balance <= 0:
-                balance = 10000.0
+                logger.error("Broker account info returned invalid or non-positive balance (%s). Failing closed.", balance)
+                self.log_scan(symbol, 0.0, "ERROR_BROKER_UNAVAILABLE", "None", "HOLD", 0, 0.0, f"Broker balance invalid ({balance})", {})
+                return {"status": "BROKER_UNAVAILABLE", "reason": "Invalid or zero account balance", "timestamp": now}
         except Exception as e:
-            balance = 10000.0
+            logger.error("Broker account query failed: %s. Failing closed.", e)
+            self.log_scan(symbol, 0.0, "ERROR_BROKER_UNAVAILABLE", "None", "HOLD", 0, 0.0, f"Broker account error: {e}", {})
+            return {"status": "BROKER_UNAVAILABLE", "reason": f"Account query failed: {e}", "timestamp": now}
 
         try:
             open_positions = self.broker.get_open_positions()
         except Exception as e:
-            logger.warning("Could not fetch open positions from broker: %s", e)
+            logger.error("Could not fetch open positions from broker: %s. Failing closed.", e)
             open_positions = None
+
+        if open_positions is None:
+            logger.error("Open positions retrieval failed. Failing closed to prevent unverified duplicate orders.")
+            self.log_scan(symbol, 0.0, "ERROR_POSITIONS_UNAVAILABLE", "None", "HOLD", 0, 0.0, "Broker open positions unverified", {})
+            return {"status": "BROKER_UNAVAILABLE", "reason": "Open positions unverified", "timestamp": now}
 
         try:
             pending_orders = self.broker.get_pending_orders()
         except Exception as e:
+            logger.warning("Could not fetch pending orders from broker: %s", e)
             pending_orders = []
 
-        # 2. Check for Closed Positions (Exit Alert Detection) only if positions fetched successfully
-        if open_positions is not None:
-            self._detect_and_notify_exits(open_positions, current_balance=balance)
-            # 3. Manage existing open positions (Trailing SL / Breakeven)
-            managed_actions = self._manage_open_positions(open_positions)
-        else:
-            managed_actions = []
+        # 2. Check for Closed Positions (Exit Alert Detection)
+        self._detect_and_notify_exits(open_positions, current_balance=balance)
+        # 3. Manage existing open positions (Trailing SL / Breakeven)
+        managed_actions = self._manage_open_positions(open_positions)
 
         # 4. Generate Trade Setup based on mode
         is_touch = self.config.mode in ("FLAT_RISK_TOUCH", "COMPOUNDING_TOUCH", "HIGH_VELOCITY_TOUCH")
@@ -878,7 +906,7 @@ class GoldAutoTrader:
         3. Stage 3: Trail runner with wide ATR-cleared buffer behind peak excursion up to Target 2.
         """
         actions_taken = []
-        if not self.config.trail_to_breakeven_at_t1:
+        if not (self.config.enable_partial_scale_out or self.config.trail_to_breakeven_at_t1 or self.config.enable_runner_trailing):
             return actions_taken
 
         for p in open_positions:
@@ -985,18 +1013,20 @@ class GoldAutoTrader:
                     if scale_out_success:
                         tracked["tp1_taken"] = 1
 
-                        # IMMEDIATELY shift remaining volume to Break-Even + offset (Risk-Free Runner) BEFORE network I/O
-                        new_sl = round(open_price + be_offset, 2) if side == "BUY" else round(open_price - be_offset, 2)
-                        new_tp = target_2 if (self.config.enable_runner_trailing and target_2) else p.get("tp")
-                        res = self.broker.modify_position(ticket=ticket, sl=new_sl, tp=new_tp)
-                        if res.get("status") == "SUCCESS":
-                            tracked["stop_loss"] = new_sl
-                            tracked["target_2"] = new_tp
-                            msg = f"Trailed SL to Break-Even + ${be_offset:.2f} (${new_sl}) for Ticket #{ticket}"
-                            actions_taken.append(msg)
-                            logger.info(msg)
-                        else:
-                            logger.warning("Failed to modify SL to Break-Even for #%s: %s", ticket, res.get("message"))
+                        # Shift remaining volume to Break-Even + offset (Risk-Free Runner) if enabled
+                        res = {"status": "SKIPPED"}
+                        if self.config.trail_to_breakeven_at_t1:
+                            new_sl = round(open_price + be_offset, 2) if side == "BUY" else round(open_price - be_offset, 2)
+                            new_tp = target_2 if (self.config.enable_runner_trailing and target_2) else p.get("tp")
+                            res = self.broker.modify_position(ticket=ticket, sl=new_sl, tp=new_tp)
+                            if res.get("status") == "SUCCESS":
+                                tracked["stop_loss"] = new_sl
+                                tracked["target_2"] = new_tp
+                                msg = f"Trailed SL to Break-Even + ${be_offset:.2f} (${new_sl}) for Ticket #{ticket}"
+                                actions_taken.append(msg)
+                                logger.info(msg)
+                            else:
+                                logger.warning("Failed to modify SL to Break-Even for #%s: %s", ticket, res.get("message"))
 
                         # Dispatch Telegram alerts AFTER broker order actions have completed
                         if self.config.send_telegram_alerts:

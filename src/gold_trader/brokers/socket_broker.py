@@ -171,6 +171,28 @@ class SocketBroker(BaseBroker):
         actual_sl = resp.get("sl", sl)
         actual_tp = resp.get("tp", tp)
 
+        # Post-timeout order reconciliation:
+        # If the socket timed out or returned communication error, the order may have filled on MT5.
+        # Query open positions to reconcile and avoid duplicate order submission.
+        if status != "SUCCESS" and ("timeout" in str(msg).lower() or "communication" in str(msg).lower()):
+            try:
+                open_positions = self.get_open_positions()
+                matching = [
+                    p for p in open_positions
+                    if p.get("symbol") == actual_symbol
+                    and (comment and comment in str(p.get("comment", "")))
+                ]
+                if matching:
+                    matched = matching[-1]
+                    ticket = str(matched.get("ticket"))
+                    filled_or_target_price = float(matched.get("open_price", filled_or_target_price))
+                    actual_sl = matched.get("sl", actual_sl)
+                    actual_tp = matched.get("tp", actual_tp)
+                    status = "SUCCESS"
+                    msg = f"Order verified via post-timeout reconciliation (Ticket #{ticket})"
+            except Exception as recon_err:
+                msg += f" (Reconciliation error: {recon_err})"
+
         return {
             "status": "SUCCESS" if status == "SUCCESS" else "REJECTED",
             "ticket": ticket,
