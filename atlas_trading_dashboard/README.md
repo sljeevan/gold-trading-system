@@ -89,15 +89,26 @@ The endpoint should return JSON shaped like this:
 }
 ```
 
-Set it before starting Streamlit:
+## Canonical Port Mapping & Production Deployment
+
+| Component | Production Port | Local Dev Port | Environment Variable / Setting |
+| :--- | :--- | :--- | :--- |
+| **FastAPI Backend & Health API** | `8787` | `8787` | Launch: `bash scripts/run_dashboard_api.sh` |
+| **Streamlit Dashboard UI** | `5000` | `8501` / `5000` | Launch: `bash scripts/run_dashboard_ui.sh` |
+| **Nginx Reverse Proxy** | `80` / `443` | N/A | Config: `scripts/nginx_trading_dashboard.conf` |
+
+Set API base URL and API authentication before starting Streamlit:
 
 ```bash
 # Linux/macOS
-export TRADING_API_BASE_URL="http://127.0.0.1:8000"
+export TRADING_API_BASE_URL="http://127.0.0.1:8787"
+export TRADING_API_KEY="your-secret-api-key"   # Optional: set when AEGIS_API_KEY is configured on backend
+streamlit run app.py --server.port 5000
 
 # PowerShell
-$env:TRADING_API_BASE_URL="http://127.0.0.1:8000"
-streamlit run app.py
+$env:TRADING_API_BASE_URL="http://127.0.0.1:8787"
+$env:TRADING_API_KEY="your-secret-api-key"
+streamlit run app.py --server.port 5000
 ```
 
 For a deployed environment, protect the API with authentication and TLS. Do not expose broker credentials to the dashboard/browser.

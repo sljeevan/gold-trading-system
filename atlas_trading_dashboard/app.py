@@ -121,10 +121,14 @@ def demo_data():
 
 def load_data():
     api_base = os.getenv("TRADING_API_BASE_URL", "").strip().rstrip("/")
+    api_key = os.getenv("TRADING_API_KEY", os.getenv("AEGIS_API_KEY", "")).strip()
     if api_base:
         try:
             import requests
-            response = requests.get(f"{api_base}/api/dashboard/overview", timeout=2.5)
+            headers = {}
+            if api_key:
+                headers["X-API-Key"] = api_key
+            response = requests.get(f"{api_base}/api/dashboard/overview", headers=headers, timeout=2.5)
             response.raise_for_status()
             payload = response.json()
             return normalize_api_payload(payload)
@@ -309,6 +313,7 @@ def render_trades_table(df_trades, key_prefix):
 # ---- Global Header & Master Dual-Account MT5 Banner ----
 st.title("🛡️ Aegis Alpha | Quantitative Portfolio Overview")
 if is_live:
+    st.sidebar.success("🟢 **Data Status: LIVE MT5**")
     col_h1, col_h2 = st.columns(2)
     bal1 = float(account_m1.get("balance") or 0.0)
     eq1 = float(account_m1.get("equity") or bal1)
@@ -337,6 +342,17 @@ if is_live:
             </div>""",
             unsafe_allow_html=True,
         )
+else:
+    st.sidebar.warning("🟡 **Data Status: DEMO FALLBACK**")
+    st.markdown(
+        """<div style="background: rgba(234, 179, 8, 0.12); border: 1px solid rgba(234, 179, 8, 0.45); border-radius: 12px; padding: 12px 16px; margin-bottom: 14px;">
+            <div style="font-weight: 700; color: #facc15; font-size: 0.95rem;">⚠️ DEMO DATA / FALLBACK ACTIVE</div>
+            <div style="color: #cbd5e1; font-size: 0.85rem; margin-top: 4px;">
+                The dashboard is operating in local demonstration mode with simulated prices and positions. Real-time API backend (port 8787) or MT5 bridge is currently unreachable.
+            </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
 chart_range = st.sidebar.selectbox("P&L Chart Range", ["Last 6 months", "Year to date", "All available"], index=0)
 

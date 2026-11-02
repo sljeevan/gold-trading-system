@@ -18,11 +18,12 @@ import sqlite3
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import APIKeyHeader, HTTPBearer
 
 from gold_trader.brokers.socket_broker import SocketBroker
 
@@ -31,13 +32,127 @@ logger = logging.getLogger("DashboardAPI")
 
 app = FastAPI(title="Aegis Alpha Quantitative Trading System", version="2.0.0")
 
+# P2-02 Origin-Restricted CORS Whitelist
+cors_env = os.getenv("AEGIS_CORS_ORIGINS", "").strip()
+if cors_env == "*":
+    cors_origins = ["*"]
+elif cors_env:
+    cors_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+else:
+    cors_origins = [
+        "http://localhost:5000",
+        "http://127.0.0.1:5000",
+        "http://localhost:8501",
+        "http://127.0.0.1:8501",
+        "http://localhost:8787",
+        "http://127.0.0.1:8787",
+        "http://trade.flss.in",
+        "https://trade.flss.in",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
     allow_headers=["*"],
 )
+
+api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _extract_credentials(request: Request) -> Optional[str]:
+    """
+    Extract token from:
+    1. Header: X-API-Key
+    2. Header: Authorization: Bearer <token>
+    3. Query parameter: ?api_key=<token>
+    """
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        return api_key.strip()
+
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        return auth_header[7:].strip()
+
+    query_key = request.query_params.get("api_key")
+    if query_key:
+        return query_key.strip()
+
+    return None
+
+
+def verify_read_access(request: Request) -> bool:
+    """
+    Verify read permission for API endpoints.
+    - If AEGIS_API_KEY is configured in env: requires valid API key or viewer key.
+    - If AEGIS_API_KEY is not configured: allows read access for local development.
+    """
+    configured_key = os.getenv("AEGIS_API_KEY", "").strip()
+    viewer_key = os.getenv("AEGIS_VIEWER_KEY", "").strip()
+    admin_key = os.getenv("AEGIS_ADMIN_KEY", "").strip()
+
+    if not configured_key and not viewer_key and not admin_key:
+        return True
+
+    provided = _extract_credentials(request)
+    if not provided:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Missing API key. Pass 'X-API-Key' header or '?api_key=' parameter.",
+        )
+
+    valid_keys = {k for k in (configured_key, viewer_key, admin_key) if k}
+    if provided not in valid_keys:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Invalid API key.",
+        )
+
+    return True
+
+
+def verify_admin_access(request: Request) -> bool:
+    """
+    Verify admin/mutation permission for sensitive endpoints (e.g. /api/journal/backfill, /api/journal/generate).
+    - If AEGIS_ADMIN_KEY or AEGIS_API_KEY is configured: requires matching admin key.
+    - If AEGIS_VIEWER_KEY was used: returns 403 Forbidden.
+    - If no key configured in env: only allowed from local loopback (127.0.0.1 / localhost / ::1 / testclient).
+    """
+    configured_key = os.getenv("AEGIS_API_KEY", "").strip()
+    admin_key = os.getenv("AEGIS_ADMIN_KEY", configured_key).strip()
+    viewer_key = os.getenv("AEGIS_VIEWER_KEY", "").strip()
+
+    provided = _extract_credentials(request)
+
+    if admin_key or configured_key:
+        if not provided:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Missing admin API key.",
+            )
+        if viewer_key and provided == viewer_key and provided != admin_key:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: Admin privileges required for mutation operations.",
+            )
+        if provided != admin_key and provided != configured_key:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Invalid admin API key.",
+            )
+        return True
+
+    client_host = request.client.host if request.client else ""
+    if client_host in ("127.0.0.1", "localhost", "::1", "testclient"):
+        return True
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Forbidden: Remote mutation requests require AEGIS_API_KEY or AEGIS_ADMIN_KEY to be configured.",
+    )
 
 DATA_DIR = os.path.expanduser("~/.gold_trading_data")
 
@@ -574,7 +689,7 @@ def fetch_live_asset_cards(
     }
 
 
-@app.get("/api/reconciliation")
+@app.get("/api/reconciliation", dependencies=[Depends(verify_read_access)])
 def get_reconciliation_report(symbol: Optional[str] = None):
     """
     Run broker-to-database reconciliation and return detected discrepancies.
@@ -722,13 +837,13 @@ def health():
     }
 
 
-@app.get("/api/dashboard/treasury")
+@app.get("/api/dashboard/treasury", dependencies=[Depends(verify_read_access)])
 def get_treasury_status():
     history_data = fetch_historic_and_pnl_data()
     return history_data["treasury_model_2"]
 
 
-@app.get("/api/strategies")
+@app.get("/api/strategies", dependencies=[Depends(verify_read_access)])
 def get_strategies_catalog(status: Optional[str] = None, asset: Optional[str] = None):
     from gold_trader.core.strategy_catalog import StrategyStatus, list_strategies
     st_enum = None
@@ -745,7 +860,7 @@ def get_strategies_catalog(status: Optional[str] = None, asset: Optional[str] = 
     }
 
 
-@app.get("/api/journal/list")
+@app.get("/api/journal/list", dependencies=[Depends(verify_read_access)])
 def get_journal_list():
     try:
         from gold_trader.core.daily_journal import DailyJournalEngine
@@ -757,7 +872,7 @@ def get_journal_list():
         return {"status": "ERROR", "error": str(e), "journals": []}
 
 
-@app.get("/api/journal/get")
+@app.get("/api/journal/get", dependencies=[Depends(verify_read_access)])
 def get_journal_entry(date: str):
     try:
         from gold_trader.core.daily_journal import DailyJournalEngine
@@ -771,7 +886,7 @@ def get_journal_entry(date: str):
         return {"status": "ERROR", "error": str(e), "content": None, "record": None}
 
 
-@app.post("/api/journal/generate")
+@app.post("/api/journal/generate", dependencies=[Depends(verify_admin_access)])
 def generate_today_journal():
     try:
         from gold_trader.core.daily_journal import DailyJournalEngine
@@ -783,7 +898,7 @@ def generate_today_journal():
         return {"status": "ERROR", "error": str(e)}
 
 
-@app.post("/api/journal/backfill")
+@app.post("/api/journal/backfill", dependencies=[Depends(verify_admin_access)])
 def backfill_all_journals():
     try:
         from gold_trader.core.daily_journal import DailyJournalEngine
@@ -796,7 +911,7 @@ def backfill_all_journals():
 
 
 
-@app.get("/api/dashboard/overview")
+@app.get("/api/dashboard/overview", dependencies=[Depends(verify_read_access)])
 def get_dashboard_overview():
     now_ts = time.time()
     if _CACHE["payload"] and (now_ts - _CACHE["timestamp"] < _CACHE["ttl_seconds"]):
@@ -1303,6 +1418,16 @@ HTML_CONTENT = """<!DOCTYPE html>
     let audioAlertsEnabled = localStorage.getItem("aegis_audio_alerts") === "true";
     let previousTradeCount = null;
 
+    function getAuthHeaders() {
+      const urlKey = new URLSearchParams(window.location.search).get("api_key");
+      const storedKey = localStorage.getItem("aegis_api_key");
+      const key = urlKey || storedKey;
+      if (urlKey && urlKey !== storedKey) {
+        try { localStorage.setItem("aegis_api_key", urlKey); } catch (e) {}
+      }
+      return key ? { "X-API-Key": key } : {};
+    }
+
     function initAudioUI() {
       const statusEl = document.getElementById("audio-status");
       const iconEl = document.getElementById("audio-icon");
@@ -1415,7 +1540,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function loadAndRenderStrategies() {
       if (!strategiesData) {
         try {
-          const res = await fetch("/api/strategies");
+          const res = await fetch("/api/strategies", { headers: getAuthHeaders() });
           const json = await res.json();
           strategiesData = json.strategies || [];
         } catch (e) {
@@ -1554,7 +1679,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     async function loadAndRenderJournal(targetDate = null) {
       try {
-        const res = await fetch("/api/journal/list");
+        const res = await fetch("/api/journal/list", { headers: getAuthHeaders() });
         const json = await res.json();
         journalList = json.journals || [];
       } catch (err) {
@@ -1596,7 +1721,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       }
 
       try {
-        const res = await fetch(`/api/journal/get?date=${dateStr}`);
+        const res = await fetch(`/api/journal/get?date=${dateStr}`, { headers: getAuthHeaders() });
         const data = await res.json();
         const rec = data.record;
         currentJournalRawMarkdown = data.content || "";
@@ -1665,7 +1790,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         btn.innerHTML = `<span>⏳</span> Compiling...`;
       }
       try {
-        const res = await fetch("/api/journal/generate", { method: "POST" });
+        const res = await fetch("/api/journal/generate", { method: "POST", headers: getAuthHeaders() });
         const data = await res.json();
         const todayStr = new Date().toISOString().slice(0, 10);
         await loadAndRenderJournal(todayStr);
@@ -1687,7 +1812,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         btn.innerHTML = `<span>⏳</span> Backfilling...`;
       }
       try {
-        const res = await fetch("/api/journal/backfill", { method: "POST" });
+        const res = await fetch("/api/journal/backfill", { method: "POST", headers: getAuthHeaders() });
         const data = await res.json();
         alert(`Backfilled ${data.count || 0} journal sessions.`);
         await loadAndRenderJournal();
@@ -2341,7 +2466,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     async function refreshDashboard() {
       try {
-        const res = await fetch("/api/dashboard/overview");
+        const res = await fetch("/api/dashboard/overview", { headers: getAuthHeaders() });
         if (!res.ok) throw new Error("API status " + res.status);
         const data = await res.json();
         globalData = data;

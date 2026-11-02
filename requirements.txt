@@ -1,4 +1,34 @@
-mcp>=1.0.0
-yfinance>=0.2.35
+# Aegis Alpha — Production Dependencies
+# Core Engine & Trading Pipeline
+numpy>=1.24.0
+pandas>=2.0.0
+pydantic>=2.0.0
 requests>=2.31.0
+yfinance>=0.2.35
+mcp>=1.0.0
+
+# Machine Learning & Quantitative Signal Filtering (pip install -e ".[ml]")
+scikit-learn>=1.3.0
+lightgbm>=4.0.0
+joblib>=1.3.0
+scipy>=1.11.0
+
+# Production Dashboard & Telemetry API (pip install -e ".[dashboard]")
+fastapi>=0.100.0
+uvicorn>=0.22.0
+streamlit>=1.30.0
+plotly>=5.15.0
+
+# Macro Confluence & Institutional Research (pip install -e ".[research]")
+openbb>=5.0.0
+openbb-core>=2.0.0
+openbb-federal-reserve>=2.0.0
+openbb-fred>=2.0.0
+openbb-deribit>=2.0.0
+openbb-cftc>=2.0.0
+
+# Testing & Quality Assurance (pip install -e ".[dev]")
 pytest>=7.4.0
+pytest-mock>=3.12.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
