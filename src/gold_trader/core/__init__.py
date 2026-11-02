@@ -1,6 +1,17 @@
 """
 Core technical analysis, macro data, strategy logic, strategy catalog, and backtesting for Gold.
 """
+from gold_trader.core.daily_journal import DailyJournalEngine
+from gold_trader.core.order_flow import (
+    DEFAULT_UAT_DB_PATH,
+    FootprintLevel,
+    ImbalanceZone,
+    OrderFlowBar,
+    OrderFlowDB,
+    OrderFlowEngine,
+    Trade,
+    WebSocketOrderFlowClient,
+)
 from gold_trader.core.strategy_catalog import (
     RiskArchetype,
     STRATEGY_CATALOG,
@@ -16,6 +27,15 @@ from gold_trader.core.strategy_catalog import (
 )
 
 __all__ = [
+    "DailyJournalEngine",
+    "OrderFlowEngine",
+    "OrderFlowDB",
+    "OrderFlowBar",
+    "FootprintLevel",
+    "ImbalanceZone",
+    "Trade",
+    "WebSocketOrderFlowClient",
+    "DEFAULT_UAT_DB_PATH",
     "STRATEGY_CATALOG",
     "StrategyProfile",
     "StrategyStatus",

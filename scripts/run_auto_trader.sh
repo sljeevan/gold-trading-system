@@ -25,6 +25,7 @@ exec $PYTHON_BIN -u -m gold_trader.scripts.run_auto_trader \
     --risk-pct 8.0 \
     --timeframe 1h \
     --mode FLAT_RISK_TOUCH \
+    --scale-out-r 1.25 \
     --runner-trail-buffer 4.50 \
     --runner-trail-buffer-r 0.50 \
     --max-positions 0 \

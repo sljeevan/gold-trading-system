@@ -325,6 +325,8 @@ class GoldAutoTrader:
                     conn.execute("ALTER TABLE trade_executions ADD COLUMN partial_closed_lots REAL DEFAULT 0.0")
                 if "partial_realized_usd" not in cols:
                     conn.execute("ALTER TABLE trade_executions ADD COLUMN partial_realized_usd REAL DEFAULT 0.0")
+                if "initial_stop_loss" not in cols:
+                    conn.execute("ALTER TABLE trade_executions ADD COLUMN initial_stop_loss REAL")
                 conn.commit()
             except Exception as e:
                 logger.debug("Table migration note: %s", e)
@@ -797,16 +799,17 @@ class GoldAutoTrader:
                             "peak_price": filled_price,
                             "partial_closed_lots": 0.0,
                             "partial_realized_usd": 0.0,
+                            "initial_stop_loss": sl,
                         }
                         
                         with self._db_connection() as conn:
                             conn.execute(
                                 """
                                 INSERT OR REPLACE INTO trade_executions
-                                (timestamp, ticket, symbol, action, lots, entry_price, stop_loss, target_1, target_2, rr_ratio, status, comment, tp1_taken, peak_price, partial_closed_lots, partial_realized_usd)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                (timestamp, ticket, symbol, action, lots, entry_price, stop_loss, target_1, target_2, rr_ratio, status, comment, tp1_taken, peak_price, partial_closed_lots, partial_realized_usd, initial_stop_loss)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
-                                (now, ticket, symbol, action, suggested_lots, filled_price, sl, calc_stage1_tp, calc_stage2_tp if self.config.enable_runner_trailing else tp2, rr_t1, "OPEN", order_comment, 0, filled_price, 0.0, 0.0),
+                                (now, ticket, symbol, action, suggested_lots, filled_price, sl, calc_stage1_tp, calc_stage2_tp if self.config.enable_runner_trailing else tp2, rr_t1, "OPEN", order_comment, 0, filled_price, 0.0, 0.0, sl),
                             )
                             conn.commit()
 

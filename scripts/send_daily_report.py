@@ -119,7 +119,7 @@ def compile_and_send_report(
                         """
                         SELECT ticket, symbol, action, lots, entry_price, close_price, pnl, close_time
                         FROM trade_executions
-                        WHERE (close_time LIKE ? OR timestamp LIKE ?) AND status = 'CLOSED'
+                        WHERE (close_time LIKE ? OR (close_time IS NULL AND timestamp LIKE ?)) AND status = 'CLOSED'
                         ORDER BY id ASC
                         """,
                         (f"{date_str}%", f"{date_str}%"),

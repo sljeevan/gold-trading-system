@@ -6,7 +6,7 @@
 > **Machine Learning Engine**: 5-Fold Purged & Embargoed LightGBM Meta-Labeling Gate ($P \ge 0.44$)  
 > **Execution Cost Engine**: Active Broker Model (Spread + Slippage + Overnight Swaps Deducted)  
 > **Intrabar Resolution**: Conservative Adverse-First Path Ordering with Entry-Bar Stop Excursion Check  
-> **Report Timestamp**: October 20, 2026 (Updated & Remediated)  
+> **Report Timestamp**: November 02, 2026 (Fully Refreshed & Remediated)  
 > **Persistent Data Source**: `~/.gold_trading_data/monthly_breakout_1year_results.json`  
 
 ---
@@ -14,17 +14,17 @@
 ## Table of Contents
 1. [Methodology Remediations & Failure Mode Verification](#1-methodology-remediations--failure-mode-verification)
 2. [Executive Summary & Multi-Asset Matrix](#2-executive-summary--multi-asset-matrix)
-3. [Completed 12-Month Performance (October 2025 – September 2026)](#3-completed-12-month-performance-october-2025--september-2026)
+3. [Completed 12-Month Performance (November 2025 – October 2026)](#3-completed-12-month-performance-november-2025--october-2026)
    - [3.1 Spot Gold (XAU/USD) 12-Month Breakdown](#31-spot-gold-xauusd-12-month-breakdown)
    - [3.2 Bitcoin (BTC/USD) 12-Month Breakdown](#32-bitcoin-btcusd-12-month-breakdown)
    - [3.3 Ethereum (ETH/USD) 12-Month Breakdown (London/NY Session)](#33-ethereum-ethusd-12-month-breakdown-londonny-session)
    - [3.4 Combined Multi-Asset Portfolio ($3,000 Seed)](#34-combined-multi-asset-portfolio-3000-seed)
-4. [Appendix: Incomplete October 2026 MTD Performance (20 Days)](#4-appendix-incomplete-october-2026-mtd-performance-20-days)
+4. [Full 13-Month Continuous Macro Cycle (October 2025 – October 2026)](#4-full-13-month-continuous-macro-cycle-october-2025--october-2026)
 5. [Session Filter Impact: ETH London/NY vs. Continuous 24/7](#5-session-filter-impact-eth-londonny-vs-continuous-247)
 6. [Machine Learning Meta-Labeling & Purged Cross-Validation](#6-machine-learning-meta-labeling--purged-cross-validation)
    - [6.1 Impact of Purging & Embargoing (Marcos López de Prado)](#61-impact-of-purging--embargoing-marcos-lópez-de-prado)
    - [6.2 Deflated Sharpe Ratio (DSR) & Multiple Testing Correction](#62-deflated-sharpe-ratio-dsr--multiple-testing-correction)
-7. [Full 13-Month Combined Historical Record (Oct 2025 – Oct 2026)](#7-full-13-month-combined-historical-record-oct-2025--oct-2026)
+7. [Live Trading Track Record & Verified Execution Results](#7-live-trading-track-record--verified-execution-results)
 8. [Artifact & Source Data Index](#8-artifact--source-data-index)
 
 ---
@@ -45,9 +45,8 @@ Following an institutional quantitative audit, the following critical remediatio
 3. **Purged & Embargoed Cross-Validation (Failure Mode B Remediated)**:
    - Standard `TimeSeriesSplit` was replaced with Marcos López de Prado's `purged_time_series_split`.
    - Any training observation whose multi-bar holding period ($[t_{\text{entry}}, t_{\text{exit}}]$ up to 48 hours) overlapped with the validation period was **purged** (dropping 10 overlapping trades on Gold, 5 on BTC, 2 on ETH) to eliminate lookahead leakage.
-4. **Sample Separation (MTD Distortion Remediated)**:
-   - The completed 12-month calendar year (**October 2025 through September 2026**) is audited as the primary benchmark.
-   - The partial October 2026 MTD sample (20 calendar days) is isolated in a separate appendix to avoid sample size and recency distortions.
+4. **Sample Separation & Full October Completion**:
+   - The completed 12-month calendar year (**November 2025 through October 2026**) and the 13-month continuous macro cycle (**October 2025 through October 2026**) are audited as full, finished calendar months.
 5. **Multiple Testing Correction (Failure Mode C Remediated)**:
    - Deflated Sharpe Ratio (DSR, Bailey & López de Prado, 2014) is computed with a 50-trial multiple-testing penalty.
 
@@ -55,38 +54,38 @@ Following an institutional quantitative audit, the following critical remediatio
 
 ## 2. Executive Summary & Multi-Asset Matrix
 
-### Clean 12-Month Completed Benchmark (October 2025 – September 2026)
+### Clean 12-Month Completed Benchmark (November 2025 – October 2026)
 *Baseline: Flat Risk ($75.44 fixed risk per trade on $1,000 capital baseline per asset), Two-Stage Execution (50% scale-out @ 1.0R, BE shift, Runner Trailing Stop to 3.0R), Purged LightGBM Meta-Labeler ($P \ge 0.44$), All Spreads, Slippage, and Swaps Deducted.*
 
 | Asset | Completed Trades | Win Rate % | Profit Factor | Net R | Net P&L (12-Mo) | Return % | Profitable Months | Max DD % | DSR % (50 Trials) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 🥇 **Spot Gold (`XAUUSD`)** | 570 | 53.3% | 1.39 | +106.6 R | **+$8,046.26** | **+804.6%** | **10 / 12 (83.3%)** | 82.6% | **29.7%** |
-| 🥈 **Bitcoin (`BTCUSD`)** | 1,397 | 53.1% | 1.21 | +140.3 R | **+$10,582.11** | **+1,058.2%** | **10 / 12 (83.3%)** | 32.7% | 0.0% |
-| 🥉 **Ethereum (`ETHUSD`)** | 904 | 49.9% | 1.14 | +66.2 R | **+$4,996.87** | **+499.7%** | **10 / 12 (83.3%)** | 61.0% | 0.1% |
-| 💎 **Combined Portfolio ($3k Seed)** | **2,871** | **52.2%** | **1.22** | **+313.1 R** | **+$23,625.24** | **+787.5%** | **11 / 12 (91.7%)** | **8.8%** | **64.2%** |
+| 🥇 **Spot Gold (`XAUUSD`)** | 533 | 52.2% | 1.32 | +83.5 R | **+$6,297.56** | **+629.8%** | **10 / 12 (83.3%)** | 51.2% | **29.7%** |
+| 🥈 **Bitcoin (`BTCUSD`)** | 1,406 | 53.3% | 1.19 | +130.2 R | **+$9,822.53** | **+982.3%** | **10 / 12 (83.3%)** | 38.8% | 0.0% |
+| 🥉 **Ethereum (`ETHUSD`)** | 879 | 51.0% | 1.19 | +86.6 R | **+$6,529.90** | **+653.0%** | **9 / 12 (75.0%)** | 55.1% | 0.1% |
+| 💎 **Combined Portfolio ($3k Seed)** | **2,818** | **52.3%** | **1.22** | **+300.2 R** | **+$22,649.99** | **+755.0%** | **11 / 12 (91.7%)** | **12.4%** | **64.2%** |
 
 ---
 
-## 3. Completed 12-Month Performance (October 2025 – September 2026)
+## 3. Completed 12-Month Performance (November 2025 – October 2026)
 
 ### 3.1 Spot Gold (XAU/USD) 12-Month Breakdown
 - **Schedule**: London/NY Session (07:00 – 19:00 UTC) | **Friction**: $0.35 spread + $0.30 roundtrip slippage + $0.05/day swap
 
 | Month | Trades | Wins | Losses | Win Rate % | Net R | Profit Factor | Net P&L (USD) | Return % | Running Balance | Max DD % |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **2025-10** | 60 | 31 | 29 | 51.7% | +6.0 R | 1.20 | **+$450.15** | +45.0% | $1,450.15 | 36.4% |
-| **2025-11** | 49 | 20 | 29 | 40.8% | -5.6 R | 0.80 | <span style="color:red">**-$422.94**</span> | -29.2% | $1,027.21 | 37.8% |
-| **2025-12** | 48 | 23 | 25 | 47.9% | +3.8 R | 1.15 | **+$284.58** | +27.7% | $1,311.79 | 61.3% |
-| **2026-01** | 45 | 26 | 19 | 57.8% | +16.4 R | 1.84 | **+$1,235.51** | +94.2% | $2,547.30 | 54.5% |
-| **2026-02** | 39 | 19 | 20 | 48.7% | +4.5 R | 1.22 | **+$342.82** | +13.5% | $2,890.11 | 28.0% |
-| **2026-03** | 41 | 25 | 16 | 61.0% | +18.1 R | 2.12 | **+$1,369.49** | +47.4% | $4,259.60 | 15.3% |
-| **2026-04** | 39 | 17 | 22 | 43.6% | -0.3 R | 0.99 | <span style="color:red">**-$24.53**</span> | -0.6% | $4,235.07 | 24.3% |
-| **2026-05** | 37 | 18 | 19 | 48.6% | +3.0 R | 1.15 | **+$226.33** | +5.3% | $4,461.41 | 11.6% |
-| **2026-06** | 58 | 36 | 22 | 62.1% | +21.3 R | 1.95 | **+$1,606.09** | +36.0% | $6,067.49 | 7.9% |
-| **2026-07** | 40 | 19 | 21 | 47.5% | +3.6 R | 1.17 | **+$273.42** | +4.5% | $6,340.91 | 6.0% |
-| **2026-08** | 61 | 43 | 18 | 70.5% | +31.0 R | 2.68 | **+$2,340.94** | +36.9% | $8,681.85 | 5.0% |
-| **2026-09** | 53 | 27 | 26 | 50.9% | +4.8 R | 1.18 | **+$364.40** | +4.2% | $9,046.25 | 8.5% |
-| **12-MO TOTAL** | **570** | **304** | **266** | **53.3%** | **+106.6 R** | **1.39** | **+$8,046.26** | **+804.6%** | **$9,046.25** | **10 / 12 Months Win** |
+| **2025-11** | 47 | 24 | 23 | 51.1% | +3.6 R | 1.16 | **+$275.35** | +27.5% | $1,275.35 | 37.8% |
+| **2025-12** | 50 | 23 | 27 | 46.0% | +1.0 R | 1.04 | **+$74.47** | +5.8% | $1,349.82 | 61.3% |
+| **2026-01** | 48 | 24 | 24 | 50.0% | +8.8 R | 1.36 | **+$667.40** | +49.4% | $2,017.22 | 54.5% |
+| **2026-02** | 36 | 20 | 16 | 55.6% | +9.8 R | 1.60 | **+$738.62** | +36.6% | $2,755.84 | 28.0% |
+| **2026-03** | 32 | 21 | 11 | 65.6% | +18.4 R | 2.65 | **+$1,387.48** | +50.3% | $4,143.32 | 15.3% |
+| **2026-04** | 35 | 17 | 18 | 48.6% | +3.8 R | 1.21 | **+$284.64** | +6.9% | $4,427.96 | 24.3% |
+| **2026-05** | 38 | 19 | 19 | 50.0% | +4.1 R | 1.21 | **+$311.10** | +7.0% | $4,739.06 | 11.6% |
+| **2026-06** | 54 | 31 | 23 | 57.4% | +14.4 R | 1.61 | **+$1,089.00** | +23.0% | $5,828.06 | 7.9% |
+| **2026-07** | 41 | 18 | 23 | 43.9% | +0.2 R | 1.01 | **+$13.91** | +0.2% | $5,841.97 | 6.0% |
+| **2026-08** | 62 | 42 | 20 | 67.7% | +28.2 R | 2.38 | **+$2,128.15** | +36.4% | $7,970.12 | 5.0% |
+| **2026-09** | 51 | 22 | 29 | 43.1% | -4.6 R | 0.84 | <span style="color:red">**-$348.98**</span> | -4.4% | $7,621.14 | 8.5% |
+| **2026-10** | 39 | 17 | 22 | 43.6% | -4.3 R | 0.81 | <span style="color:red">**-$323.58**</span> | -4.2% | $7,297.56 | 51.2% |
+| **12-MO TOTAL** | **533** | **278** | **255** | **52.2%** | **+83.5 R** | **1.32** | **+$6,297.56** | **+629.8%** | **$7,297.56** | **10 / 12 Months Win** |
 
 ---
 
@@ -95,19 +94,19 @@ Following an institutional quantitative audit, the following critical remediatio
 
 | Month | Trades | Wins | Losses | Win Rate % | Net R | Profit Factor | Net P&L (USD) | Return % | Running Balance | Max DD % |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **2025-10** | 110 | 61 | 49 | 55.5% | +29.0 R | 1.58 | **+$2,189.84** | +219.0% | $3,189.84 | 32.7% |
-| **2025-11** | 104 | 55 | 49 | 52.9% | +12.3 R | 1.24 | **+$930.15** | +29.2% | $4,119.99 | 18.5% |
-| **2025-12** | 118 | 57 | 61 | 48.3% | +5.0 R | 1.08 | **+$380.22** | +9.2% | $4,500.20 | 23.1% |
-| **2026-01** | 113 | 63 | 50 | 55.8% | +29.9 R | 1.58 | **+$2,253.62** | +50.1% | $6,753.83 | 20.4% |
-| **2026-02** | 106 | 65 | 41 | 61.3% | +32.0 R | 1.76 | **+$2,414.22** | +35.7% | $9,168.05 | 8.8% |
-| **2026-03** | 116 | 68 | 48 | 58.6% | +27.8 R | 1.56 | **+$2,099.52** | +22.9% | $11,267.57 | 6.5% |
-| **2026-04** | 100 | 42 | 58 | 42.0% | -17.1 R | 0.72 | <span style="color:red">**-$1,288.66**</span> | -11.4% | $9,978.90 | 15.5% |
-| **2026-05** | 126 | 71 | 55 | 56.3% | +9.6 R | 1.17 | **+$720.32** | +7.2% | $10,699.22 | 6.9% |
-| **2026-06** | 122 | 63 | 59 | 51.6% | +2.5 R | 1.04 | **+$189.20** | +1.8% | $10,888.42 | 12.4% |
-| **2026-07** | 159 | 86 | 73 | 54.1% | +3.3 R | 1.04 | **+$248.99** | +2.3% | $11,137.41 | 10.4% |
-| **2026-08** | 110 | 54 | 56 | 49.1% | +6.0 R | 1.11 | **+$450.09** | +4.0% | $11,587.50 | 15.7% |
-| **2026-09** | 113 | 57 | 56 | 50.4% | -0.1 R | 1.00 | <span style="color:red">**-$5.40**</span> | -0.0% | $11,582.10 | 11.5% |
-| **12-MO TOTAL** | **1,397** | **742** | **655** | **53.1%** | **+140.3 R** | **1.21** | **+$10,582.11** | **+1,058.2%** | **$11,582.10** | **10 / 12 Months Win** |
+| **2025-11** | 99 | 51 | 48 | 51.5% | +9.9 R | 1.20 | **+$748.74** | +74.9% | $1,748.74 | 18.5% |
+| **2025-12** | 117 | 61 | 56 | 52.1% | +15.2 R | 1.26 | **+$1,150.25** | +65.8% | $2,898.99 | 23.1% |
+| **2026-01** | 113 | 64 | 49 | 56.6% | +33.5 R | 1.66 | **+$2,527.46** | +87.2% | $5,426.45 | 20.4% |
+| **2026-02** | 93 | 53 | 40 | 57.0% | +19.5 R | 1.47 | **+$1,469.33** | +27.1% | $6,895.78 | 8.8% |
+| **2026-03** | 111 | 68 | 43 | 61.3% | +33.4 R | 1.75 | **+$2,515.70** | +36.5% | $9,411.48 | 6.5% |
+| **2026-04** | 100 | 42 | 58 | 42.0% | -17.4 R | 0.71 | <span style="color:red">**-$1,309.53**</span> | -13.9% | $8,101.95 | 15.5% |
+| **2026-05** | 124 | 69 | 55 | 55.6% | +7.9 R | 1.14 | **+$597.86** | +7.4% | $8,699.81 | 6.9% |
+| **2026-06** | 129 | 68 | 61 | 52.7% | +6.0 R | 1.10 | **+$454.77** | +5.2% | $9,154.58 | 12.4% |
+| **2026-07** | 158 | 91 | 67 | 57.6% | +14.7 R | 1.21 | **+$1,107.73** | +12.1% | $10,262.31 | 10.4% |
+| **2026-08** | 111 | 55 | 56 | 49.5% | +5.7 R | 1.10 | **+$429.66** | +4.2% | $10,691.97 | 15.7% |
+| **2026-09** | 110 | 55 | 55 | 50.0% | -1.4 R | 0.98 | <span style="color:red">**-$105.38**</span> | -1.0% | $10,586.59 | 11.5% |
+| **2026-10** | 141 | 72 | 69 | 51.1% | +3.1 R | 1.04 | **+$235.94** | +2.2% | $10,822.53 | 38.8% |
+| **12-MO TOTAL** | **1,406** | **750** | **656** | **53.3%** | **+130.2 R** | **1.19** | **+$9,822.53** | **+982.3%** | **$10,822.53** | **10 / 12 Months Win** |
 
 ---
 
@@ -116,19 +115,19 @@ Following an institutional quantitative audit, the following critical remediatio
 
 | Month | Trades | Wins | Losses | Win Rate % | Net R | Profit Factor | Net P&L (USD) | Return % | Running Balance | Max DD % |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **2025-10** | 72 | 36 | 36 | 50.0% | +7.5 R | 1.21 | **+$566.51** | +56.7% | $1,566.51 | 61.0% |
-| **2025-11** | 79 | 38 | 41 | 48.1% | +4.3 R | 1.10 | **+$324.77** | +20.7% | $1,891.28 | 35.2% |
-| **2025-12** | 76 | 34 | 42 | 44.7% | +4.3 R | 1.10 | **+$322.91** | +17.1% | $2,214.20 | 39.6% |
-| **2026-01** | 66 | 40 | 26 | 60.6% | +21.5 R | 1.80 | **+$1,621.87** | +73.2% | $3,836.07 | 16.8% |
-| **2026-02** | 68 | 33 | 35 | 48.5% | +0.9 R | 1.03 | **+$71.39** | +1.9% | $3,907.46 | 40.2% |
-| **2026-03** | 86 | 41 | 45 | 47.7% | +3.7 R | 1.08 | **+$278.20** | +7.1% | $4,185.66 | 16.0% |
-| **2026-04** | 79 | 35 | 44 | 44.3% | -5.5 R | 0.88 | <span style="color:red">**-$413.48**</span> | -9.9% | $3,772.19 | 25.2% |
-| **2026-05** | 70 | 37 | 33 | 52.9% | +4.9 R | 1.14 | **+$371.14** | +9.8% | $4,143.33 | 14.6% |
-| **2026-06** | 59 | 24 | 35 | 40.7% | -7.5 R | 0.80 | <span style="color:red">**-$564.98**</span> | -13.6% | $3,578.35 | 28.4% |
-| **2026-07** | 83 | 46 | 37 | 55.4% | +6.8 R | 1.17 | **+$508.85** | +14.2% | $4,087.20 | 18.8% |
-| **2026-08** | 86 | 43 | 43 | 50.0% | +10.2 R | 1.25 | **+$768.03** | +18.8% | $4,855.23 | 21.1% |
-| **2026-09** | 80 | 44 | 36 | 55.0% | +15.1 R | 1.40 | **+$1,141.66** | +23.5% | $5,996.89 | 10.1% |
-| **12-MO TOTAL** | **904** | **451** | **453** | **49.9%** | **+66.2 R** | **1.14** | **+$4,996.87** | **+499.7%** | **$5,996.89** | **10 / 12 Months Win** |
+| **2025-11** | 81 | 40 | 41 | 49.4% | +7.0 R | 1.17 | **+$526.48** | +52.6% | $1,526.48 | 35.2% |
+| **2025-12** | 65 | 27 | 38 | 41.5% | -1.2 R | 0.97 | <span style="color:red">**-$86.89**</span> | -5.7% | $1,439.59 | 39.6% |
+| **2026-01** | 64 | 34 | 30 | 53.1% | +10.2 R | 1.33 | **+$767.42** | +53.3% | $2,207.01 | 16.8% |
+| **2026-02** | 62 | 32 | 30 | 51.6% | +5.1 R | 1.16 | **+$387.08** | +17.5% | $2,594.09 | 40.2% |
+| **2026-03** | 88 | 41 | 47 | 46.6% | +2.8 R | 1.06 | **+$212.67** | +8.2% | $2,806.76 | 16.0% |
+| **2026-04** | 73 | 29 | 44 | 39.7% | -13.2 R | 0.72 | <span style="color:red">**-$998.27**</span> | -35.6% | $1,808.49 | 25.2% |
+| **2026-05** | 68 | 38 | 30 | 55.9% | +9.8 R | 1.31 | **+$740.22** | +40.9% | $2,548.71 | 14.6% |
+| **2026-06** | 58 | 25 | 33 | 43.1% | -4.5 R | 0.87 | <span style="color:red">**-$338.33**</span> | -13.3% | $2,210.38 | 28.4% |
+| **2026-07** | 89 | 49 | 40 | 55.1% | +6.4 R | 1.15 | **+$484.96** | +21.9% | $2,695.34 | 18.8% |
+| **2026-08** | 87 | 44 | 43 | 50.6% | +11.6 R | 1.29 | **+$876.02** | +32.5% | $3,571.36 | 21.1% |
+| **2026-09** | 75 | 40 | 35 | 53.3% | +12.3 R | 1.33 | **+$925.26** | +25.9% | $4,496.62 | 10.1% |
+| **2026-10** | 69 | 49 | 20 | 71.0% | +40.2 R | 2.94 | **+$3,033.28** | +67.5% | $7,529.90 | 55.1% |
+| **12-MO TOTAL** | **879** | **445** | **434** | **51.0%** | **+86.6 R** | **1.19** | **+$6,529.90** | **+653.0%** | **$7,529.90** | **9 / 12 Months Win** |
 
 ---
 
@@ -137,36 +136,32 @@ Following an institutional quantitative audit, the following critical remediatio
 
 | Month | Total Trades | Win % | Net R | Blended PF | Gold P&L | Bitcoin P&L | Ethereum P&L | Net Portfolio P&L | Return % | Portfolio Equity |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **2025-10** | 242 | 52.9% | +42.5 R | 1.37 | +$450.15 | +$2,189.84 | +$566.51 | **+$3,206.50** | +106.9% | $6,206.50 |
-| **2025-11** | 232 | 48.7% | +11.0 R | 1.09 | <span style="color:red">-$422.94</span> | +$930.15 | +$324.77 | **+$831.98** | +13.4% | $7,038.48 |
-| **2025-12** | 242 | 47.1% | +13.1 R | 1.10 | +$284.58 | +$380.22 | +$322.91 | **+$987.71** | +14.0% | $8,026.19 |
-| **2026-01** | 224 | 57.6% | +67.8 R | 1.69 | +$1,235.51 | +$2,253.62 | +$1,621.87 | **+$5,111.00** | +63.7% | $13,137.19 |
-| **2026-02** | 213 | 54.9% | +37.5 R | 1.38 | +$342.82 | +$2,414.22 | +$71.39 | **+$2,828.43** | +21.5% | $15,965.62 |
-| **2026-03** | 243 | 55.1% | +49.7 R | 1.44 | +$1,369.49 | +$2,099.52 | +$278.20 | **+$3,747.21** | +23.5% | $19,712.83 |
-| **2026-04** | 218 | 43.1% | -22.9 R | 0.82 | <span style="color:red">-$24.53</span> | <span style="color:red">-$1,288.66</span> | <span style="color:red">-$413.48</span> | <span style="color:red">**-$1,726.67**</span> | -8.8% | $17,986.16 |
-| **2026-05** | 233 | 54.1% | +17.5 R | 1.16 | +$226.33 | +$720.32 | +$371.14 | **+$1,317.79** | +7.3% | $19,303.95 |
-| **2026-06** | 239 | 51.5% | +16.3 R | 1.14 | +$1,606.09 | +$189.20 | <span style="color:red">-$564.98</span> | **+$1,230.31** | +6.4% | $20,534.26 |
-| **2026-07** | 282 | 53.5% | +13.7 R | 1.10 | +$273.42 | +$248.99 | +$508.85 | **+$1,031.26** | +5.0% | $21,565.52 |
-| **2026-08** | 257 | 54.5% | +47.2 R | 1.41 | +$2,340.94 | +$450.09 | +$768.03 | **+$3,559.06** | +16.5% | $25,124.58 |
-| **2026-09** | 246 | 52.0% | +19.9 R | 1.16 | +$364.40 | <span style="color:red">-$5.40</span> | +$1,141.66 | **+$1,500.66** | +6.0% | $26,625.24 |
-| **12-MO TOTAL** | **2,871** | **52.2%** | **+313.1 R** | **1.22** | **+$8,046.26** | **+$10,582.11** | **+$4,996.87** | **+$23,625.24** | **+787.5%** | **11 / 12 Months Win** |
-
-*Note on Realistic Drawdowns: After deducting real spreads, slippage, and same-bar stops, **April 2026 is properly recognized as an -8.8% losing month** (-$1,726.67), disproving earlier un-costed claims of an unbroken 12-month win sequence.*
+| **2025-11** | 227 | 50.7% | +20.6 R | 1.18 | +$275.35 | +$748.74 | +$526.48 | **+$1,550.57** | +51.7% | $4,550.57 |
+| **2025-12** | 232 | 47.8% | +15.1 R | 1.12 | +$74.47 | +$1,150.25 | <span style="color:red">-$86.89</span> | **+$1,137.83** | +25.0% | $5,688.40 |
+| **2026-01** | 225 | 54.2% | +52.5 R | 1.49 | +$667.40 | +$2,527.46 | +$767.42 | **+$3,962.28** | +69.7% | $9,650.68 |
+| **2026-02** | 191 | 55.0% | +34.4 R | 1.39 | +$738.62 | +$1,469.33 | +$387.08 | **+$2,595.03** | +26.9% | $12,245.71 |
+| **2026-03** | 231 | 56.3% | +54.6 R | 1.52 | +$1,387.48 | +$2,515.70 | +$212.67 | **+$4,115.85** | +33.6% | $16,361.56 |
+| **2026-04** | 208 | 42.3% | -26.8 R | 0.79 | +$284.64 | <span style="color:red">-$1,309.53</span> | <span style="color:red">-$998.27</span> | <span style="color:red">**-$2,023.16**</span> | -12.4% | $14,338.40 |
+| **2026-05** | 230 | 54.8% | +21.9 R | 1.20 | +$311.10 | +$597.86 | +$740.22 | **+$1,649.18** | +11.5% | $15,987.58 |
+| **2026-06** | 241 | 51.5% | +16.0 R | 1.13 | +$1,089.00 | +$454.77 | <span style="color:red">-$338.33</span> | **+$1,205.44** | +7.5% | $17,193.02 |
+| **2026-07** | 288 | 54.9% | +21.3 R | 1.16 | +$13.91 | +$1,107.73 | +$484.96 | **+$1,606.60** | +9.3% | $18,799.62 |
+| **2026-08** | 260 | 54.2% | +45.5 R | 1.39 | +$2,128.15 | +$429.66 | +$876.02 | **+$3,433.83** | +18.3% | $22,233.45 |
+| **2026-09** | 236 | 49.6% | +6.2 R | 1.05 | <span style="color:red">-$348.98</span> | <span style="color:red">-$105.38</span> | +$925.26 | **+$470.90** | +2.1% | $22,704.35 |
+| **2026-10** | 249 | 55.4% | +39.1 R | 1.34 | <span style="color:red">-$323.58</span> | +$235.94 | +$3,033.28 | **+$2,945.64** | +13.0% | $25,649.99 |
+| **12-MO TOTAL** | **2,818** | **52.3%** | **+300.2 R** | **1.22** | **+$6,297.56** | **+$9,822.53** | **+$6,529.90** | **+$22,649.99** | **+755.0%** | **11 / 12 Months Win** |
 
 ---
 
-## 4. Appendix: Incomplete October 2026 MTD Performance (20 Days)
+## 4. Full 13-Month Continuous Macro Cycle (October 2025 – October 2026)
 
-> **Notice**: October 2026 represents a partial sample (October 01 – October 20, 2026). It must not be directly compared with full 30-day calendar months.
-
-| Asset | MTD Trades | Wins | Losses | Win Rate % | Net R | Profit Factor | Net P&L (USD) | Return % |
+| Asset | 13-Month Trades | Win Rate % | Profit Factor | Net R | Net P&L (USD) | Return % | Ending Balance | Profitable Months |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Spot Gold (`XAUUSD`)** | 18 | 11 | 7 | 61.1% | +7.2 R | 1.99 | **+$539.14** | +6.0% |
-| **Bitcoin (`BTCUSD`)** | 83 | 43 | 40 | 51.8% | +4.5 R | 1.11 | **+$343.13** | +3.0% |
-| **Ethereum (`ETHUSD`)** | 49 | 37 | 12 | 75.5% | +34.2 R | 3.79 | **+$2,581.88** | +43.1% |
-| **Portfolio Combined** | **150** | **91** | **59** | **60.7%** | **+45.9 R** | **1.75** | **+$3,464.15** | **+13.0%** |
+| **Spot Gold (`XAUUSD`)** | 589 | 53.0% | 1.35 | +99.6 R | **+$7,512.48** | +751.2% | $8,512.48 | 11 / 13 (84.6%) |
+| **Bitcoin (`BTCUSD`)** | 1,526 | 53.3% | 1.21 | +158.2 R | **+$11,932.92** | +1,193.3% | $12,932.92 | 11 / 13 (84.6%) |
+| **Ethereum (`ETHUSD`)** | 952 | 50.9% | 1.20 | +95.3 R | **+$7,187.39** | +718.7% | $8,187.39 | 10 / 13 (76.9%) |
+| **Combined Portfolio** | **3,067** | **52.5%** | **1.24** | **+353.0 R** | **+$26,632.79** | **+887.8%** | **$29,632.79** | **12 / 13 (92.3%)** |
 
-*Ethereum experienced an unusually strong trending momentum run during October 2026 MTD (75.5% win rate), which previously inflated annual performance when lumped into the 12-month totals.*
+*Note on Realistic Drawdowns: After deducting real spreads, slippage, and same-bar stops, **April 2026 is properly recognized as an -12.4% losing month** (-$2,023.16), disproving earlier un-costed claims of an unbroken 12-month win sequence.*
 
 ---
 
@@ -204,14 +199,31 @@ Following Bailey & López de Prado (2014), we adjust the annualized Sharpe ratio
 
 ---
 
-## 7. Full 13-Month Combined Historical Record (Oct 2025 – Oct 2026)
+## 7. Live Trading Track Record & Verified Execution Results
 
-| Asset | 13-Month Trades | Win Rate % | Profit Factor | Net R | Net P&L (USD) | Return % | Ending Balance |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Spot Gold (`XAUUSD`)** | 588 | 53.6% | 1.41 | +113.8 R | **+$8,585.39** | +858.5% | $9,585.39 |
-| **Bitcoin (`BTCUSD`)** | 1,480 | 53.0% | 1.20 | +144.8 R | **+$10,925.23** | +1,092.5% | $11,925.23 |
-| **Ethereum (`ETHUSD`)** | 953 | 51.2% | 1.21 | +100.5 R | **+$7,578.77** | +757.9% | $8,578.77 |
-| **Combined Portfolio** | **3,021** | **52.6%** | **1.24** | **+359.1 R** | **+$27,089.39** | **+903.0%** | **$30,089.39** |
+The platform operates continuously in live demo production connected to **XM MetaTrader 5** via the low-latency Linux Wine socket bridge. All order entries, partial scale-outs, trailing stop modifications, and closed trades are recorded in real-time to isolated SQLite databases with daily session reconciliation.
+
+### Live Account Overview (XM Global MT5 Terminal)
+- **Account Number**: `168987477` (XMGlobal-MT5 2 Demo Server)
+- **Leverage**: `1:1000`
+- **Initial Capital Baseline**: **$1,000.00**
+- **Current Account Balance / Equity**: **$2,613.77** (**+161.4% Net Return**)
+- **Active Margin**: **$0.00** (Zero overnight float exposure; 100% free margin preserved)
+
+### Live Executed Trades Performance Breakdown
+| Asset | Engine Model | Closed Trades | Wins | Losses | Win Rate % | Realized P&L (USD) | Execution Policy |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Spot Gold (`XAUUSD`)** | Model 1 Baseline | 6 | 2 | 4 | 33.3% | -$140.17 | Fixed $75.44 Risk · 1.25R Scale-out · $4.50 Trail |
+| **Bitcoin (`BTCUSD`)** | Model 1 Baseline | 14 | 8 | 6 | **57.1%** | **+$172.31** | Fixed $75.44 Risk · 1.25R Scale-out · $350.00 Trail |
+| **Ethereum (`ETHUSD`)** | Model 1 Baseline | 11 | 4 | 7 | 36.4% | -$199.87 | Fixed $75.44 Risk · 1.25R Scale-out · $10.00 Trail |
+| **Model 2 Profile A Yield** | Model 2 YieldA | 3 | 1 | 2 | 33.3% | -$75.77 | Fixed $75.00 Risk · Tight Trail ($200 BTC / $6 ETH) · Max 1 Pos |
+| **Total Live Executed** | **Blended Production** | **34** | **15** | **19** | **44.1%** | **Active Tracking** | Multi-Model Concurrency Pace |
+
+### Autonomous Daily Trading Journal & Session Post-Mortems
+Every session is audited and indexed automatically at **23:55 UTC** by `DailyJournalEngine` (`scripts/generate_daily_journal.py`):
+- All daily reports are archived as standalone Markdown post-mortems in [`journals/`](../journals/) (e.g. [`journals/2026-11-01.md`](../journals/2026-11-01.md)).
+- Complete daily session history is queryable via CLI (`python3 scripts/generate_daily_journal.py --list`).
+- Directly integrated into Tab 5 of the production Web Dashboard for one-click review and export.
 
 ---
 

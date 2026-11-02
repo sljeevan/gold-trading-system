@@ -343,11 +343,12 @@ chart_range = st.sidebar.selectbox("P&L Chart Range", ["Last 6 months", "Year to
 # ==============================================================================
 # MAIN TABS: 100% CLEAN SEGREGATION
 # ==============================================================================
-tab_m1, tab_m2, tab_all, tab_strategies = st.tabs([
+tab_m1, tab_m2, tab_all, tab_strategies, tab_journal = st.tabs([
     "🛡️ Model 1: Production Baseline",
     "⚡ Model 2: Profile A Yield Engine",
     "🌐 Consolidated Portfolio Overview",
     "📚 Strategy Library & Research Vault",
+    "📔 Daily Trading Journal",
 ])
 
 # ------------------------------------------------------------------------------
@@ -605,6 +606,86 @@ with tab_strategies:
                         <b>⚠️ Operational Note & Risk Safeguard:</b> {s.notes_and_caveats}
                     </div>
                     """, unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------------------------
+# TAB 5: DAILY TRADING JOURNAL & POST-MORTEMS
+# ------------------------------------------------------------------------------
+with tab_journal:
+    st.markdown("""
+    <div style="background: rgba(34, 197, 94, 0.08); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 12px; padding: 10px 16px; margin-bottom: 16px;">
+        <span style="font-weight: 700; color: #4ade80; font-size: 0.95rem;">📔 Autonomous Daily Trading Journal & Session Post-Mortems</span>
+        <span style="float: right; font-size: 0.75rem; background: rgba(34, 197, 94, 0.2); color: #4ade80; padding: 3px 10px; border-radius: 999px; font-weight: 700;">DAILY ARCHIVE</span>
+        <p style="font-size: 0.8rem; color: #9ca3af; margin: 4px 0 0 0;">
+            Daily multi-asset execution accounting, intraday Donchian/SuperTrend regime telemetry, R-multiple distributions, and macro catalyst audits.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    try:
+        from gold_trader.core.daily_journal import DailyJournalEngine
+        journal_engine = DailyJournalEngine()
+        available_journals = journal_engine.list_journals()
+    except Exception as e:
+        available_journals = []
+        journal_engine = None
+        st.error(f"Could not initialize DailyJournalEngine: {e}")
+
+    col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 1, 1])
+    with col_ctrl1:
+        if available_journals:
+            date_options = [j["date"] for j in available_journals]
+            selected_date = st.selectbox("Select Journal Date", date_options, index=0)
+        else:
+            selected_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            st.info("No saved journals found yet.")
+
+    with col_ctrl2:
+        st.write("")
+        st.write("")
+        if st.button("🔄 Refresh Today", use_container_width=True):
+            if journal_engine:
+                with st.spinner("Compiling today's trading journal..."):
+                    journal_engine.generate_journal()
+                st.rerun()
+
+    with col_ctrl3:
+        st.write("")
+        st.write("")
+        if st.button("🔁 Backfill All Days", use_container_width=True):
+            if journal_engine:
+                with st.spinner("Backfilling all database sessions..."):
+                    journal_engine.backfill_all()
+                st.rerun()
+
+    if available_journals and journal_engine:
+        # Match selected journal record
+        sel_rec = next((j for j in available_journals if j["date"] == selected_date), None)
+        if sel_rec:
+            # Scorecard metric cards
+            j_m1, j_m2, j_m3, j_m4, j_m5 = st.columns(5)
+            pnl_val = sel_rec["total_pnl"]
+            pnl_color = "🟢" if pnl_val > 0 else ("🔴" if pnl_val < 0 else "⚪")
+            j_m1.metric("Session P&L", f"{'+' if pnl_val>=0 else ''}${pnl_val:,.2f}", f"{sel_rec['roi_pct']:+.2f}% ROI")
+            j_m2.metric("Net R-Multiple", f"{sel_rec['net_r_multiple']:+.2f}R")
+            j_m3.metric("Trades Closed", f"{sel_rec['trades_count']}", f"{sel_rec['wins']}W / {sel_rec['losses']}L")
+            j_m4.metric("Win Rate", f"{sel_rec['win_rate']:.1f}%")
+            j_m5.metric("Profit Factor", f"{sel_rec['profit_factor']:.2f}")
+
+            st.divider()
+
+            # Render markdown content
+            content = journal_engine.get_journal_content(selected_date)
+            if content:
+                st.markdown(content)
+                st.download_button(
+                    label=f"⬇️ Download {selected_date}.md",
+                    data=content,
+                    file_name=f"aegis_alpha_journal_{selected_date}.md",
+                    mime="text/markdown",
+                )
+            else:
+                st.warning(f"Markdown file for {selected_date} not found.")
 
 
 # ---- Global Health Checklist ----

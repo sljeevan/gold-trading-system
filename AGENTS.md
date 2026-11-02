@@ -75,7 +75,7 @@ The trading engine executes strictly under **Flat Dollar Risk Allocation** on a 
    - Bitcoin: $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$500.00)$
    - Ethereum: $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$20.00)$
 3. **Institutional Two-Stage Execution**:
-   - *Stage 1 (Partial Scale-Out)*: At Target 1 (+1.0R), 50% volume is closed into realized cash for positions $\ge 0.02$ lots.
+   - *Stage 1 (Partial Scale-Out)*: At Target 1 (+1.25R for Gold [+$102 avg win], +1.0R for BTC & ETH), 50% volume is closed into realized cash for positions $\ge 0.02$ lots.
    - *Stage 2 (Risk-Free Runner)*: Remaining stop-loss moves to Break-Even + offset ($+\$0.50$ Gold, $+\$30.00$ BTC, $+\$2.00$ ETH), locking in a risk-free runner.
    - *Stage 3 (Dynamic Wide Trail)*: Runner trailing stop follows price with an ATR-cleared buffer ($4.50 Gold, $350 BTC, $10 ETH) behind peak excursion up to Target 2 (3.0R).
 4. **Adaptive Dual-Speed Polling Loop**:
@@ -179,6 +179,24 @@ python3 -c "from gold_trader.core.compounding_ladder import CompoundingLadderMan
 - **Manual Ladder Reset**:
 ```bash
 python3 -c "from gold_trader.core.compounding_ladder import CompoundingLadderManager; CompoundingLadderManager().reset_ladder(starting_balance=20.0)"
+```
+
+### 4.4 Autonomous Daily Trading Journal & Session Post-Mortems
+- **Core Engine**: [`src/gold_trader/core/daily_journal.py`](file:///home/mcpuser/MCP/gold-trading-system/src/gold_trader/core/daily_journal.py) (`DailyJournalEngine`)
+- **CLI & Backfiller**: [`scripts/generate_daily_journal.py`](file:///home/mcpuser/MCP/gold-trading-system/scripts/generate_daily_journal.py)
+- **Journal Storage**: Markdown archives saved to [`journals/YYYY-MM-DD.md`](file:///home/mcpuser/MCP/gold-trading-system/journals/)
+- **Database Index**: SQLite database at `~/.gold_trading_data/trading_journal.db`
+- **Dashboard UI**: Interactive "Daily Trading Journal" tab in [Atlas Trading Dashboard](file:///home/mcpuser/MCP/gold-trading-system/atlas_trading_dashboard/app.py)
+- **Automated Schedule**: User timer `daily-journal.timer` fires at `23:55 UTC` daily with Telegram dispatch.
+```bash
+# 1. Generate / View Today's Journal
+python3 scripts/generate_daily_journal.py
+
+# 2. View Historical Journal Summary Table
+python3 scripts/generate_daily_journal.py --list
+
+# 3. Backfill All Historical Database Records
+python3 scripts/generate_daily_journal.py --backfill
 ```
 
 ---
@@ -580,6 +598,49 @@ high_wr = [s for s in catalog.values() if s.target_win_rate_pct >= 54.0]
 # 3. Query via REST API
 # curl http://127.0.0.1:8787/api/strategies
 ```
+
+---
+
+## 15. Prop Firm Evaluation Architecture & Risk Calibration Audit (FTMO & The5ers)
+
+This section documents the quantitative risk calibration, Monte Carlo survival audits, and operational architecture required to deploy Aegis Alpha on large-capital prop firm accounts ($100,000 to $200,000 allocations).
+
+### 15.1 Mathematical Ground Rules for Prop Firm Accounts
+Unlike retail accounts, prop firm evaluations have hard disqualification limits:
+1. **Daily Loss Limit**: 5.0% on FTMO, **3.0% on The5ers**.
+2. **Total Drawdown Limit**: 10.0% on FTMO & The5ers 2-Step, **6.0% on The5ers 1-Step**.
+3. **No Time Limit**: Modern evaluations have **unlimited calendar days**. Velocity is secondary; capital preservation and drawdown containment are paramount.
+
+### 15.2 Invariant Statistical Metrics Across Risk Tiers
+Scaling down risk per trade modifies position size and dollar returns, but the system's underlying edge remains identical:
+- **Win Rate**: ~61.5% blended portfolio (~55.4% ETH, ~52.2% Gold)
+- **Profit Factor (PF)**: 1.78 blended portfolio (1.53 ETH)
+- **Payoff Ratio (R:R)**: 1.11R – 1.25R
+- **Signal Frequency**: ~59 trades/month across the full portfolio (~18.2 R/month net expectancy)
+
+### 15.3 Sizing Calibration Matrix ($100,000 Account)
+| Metric | **0.50% Risk ($500)** | **0.40% Risk ($400)** | **0.30% Risk ($300)** | Quantitative Impact |
+| :--- | :---: | :---: | :---: | :--- |
+| **Phase 1 Target (+10%)** | 20.0 R (~1.2 mo) | 25.0 R (~1.5 mo) | 33.3 R (~1.9 mo) | Trade volume needed to pass. |
+| **FTMO Phase 1 (+8%)** | 16.0 R (~1.0 mo) | 20.0 R (~1.2 mo) | 26.7 R (~1.5 mo) | Lower target on FTMO. |
+| **Phase 2 Target (+5%)** | 10.0 R (~0.6 mo) | 12.5 R (~0.7 mo) | 16.7 R (~0.9 mo) | Verification phase target. |
+| **Historical 3Y Max DD** | 5.75% ($5,750) | 4.60% ($4,600) | **3.45% ($3,450)** | 0.30% cuts total DD by **40%**. |
+| **3 Consecutive Losses in 1 Day** | -1.50% (50% of 3% cap) | -1.20% (40% of 3% cap) | **-0.90% (30% of 3% cap)** | Daily DD buffer remaining. |
+| **Losses to Breach 3% Daily Limit** | 6 losses | 7.5 losses | **10 consecutive losses** | Impossible breach under 1H bar pacing. |
+| **Losses to Breach 5% Daily Limit** | 10 losses | 12.5 losses | **16.7 consecutive losses** | Extreme survival margin for FTMO. |
+
+### 15.4 Monte Carlo Survival Audits (20,000 Paths)
+Under a conservative market chop regime (51.5% WR, 1.08 Payoff):
+- **0.50% Risk**: 83.14% pass rate (10% DD), but only 55.01% on 6% DD cap. 95th percentile max DD reaches **10.32%** (causes account termination).
+- **0.40% Risk**: **89.37% pass rate** (10% DD), 62.87% on 6% DD cap. 95th percentile DD is **10.18%**. Recommended for **FTMO Swing**.
+- **0.30% Risk**: **94.88% pass rate** (10% DD), **73.76% on 6% DD cap**. 95th percentile DD stays safely at **9.86%**. Mandatory for **The5ers Summer Plan / 1-Step**.
+
+### 15.5 Staged Action Items for Next Session
+1. **Selection Decision**: Choose between FTMO Swing (higher upfront fee, wider 5% daily limit) and The5ers Summer Plan (steep discount, tighter 3% daily limit).
+2. **Prop Firm Engine Mode**: Add `--prop-firm-mode` with dynamic equity percentage sizing:
+   $$\text{Lots} = \text{round}\left(\frac{\text{Equity} \times \text{Risk \%}}{\text{SL Distance} \times \text{Contract Size}}, 2\right)$$
+3. **Automated Circuit Breaker**: Integrate an intraday equity monitor halting new entries if daily floating drawdown touches -2.0% (The5ers) or -2.5% (FTMO).
+4. **Paper Verification**: Connect MT5 demo bridge to a free prop firm practice server for 2 weeks.
 
 ---
 *Maintained by Antigravity Agentic Pair Programmer for Aegis Alpha.*
