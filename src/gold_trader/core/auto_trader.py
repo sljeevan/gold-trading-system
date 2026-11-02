@@ -88,6 +88,10 @@ class AutoTraderConfig:
     require_broker: bool = True
     adx_min_threshold: Optional[float] = None
     require_slope_alignment: bool = True
+    allow_live_real: bool = False
+    expected_account_id: Optional[str] = None
+    trade_cap_failure_policy: Literal["FAIL_CLOSED", "FAIL_OPEN"] = "FAIL_CLOSED"
+    news_guard_failure_policy: Literal["FAIL_CLOSED", "FAIL_OPEN"] = "FAIL_CLOSED"
     ladder_state_file: Optional[str] = None
     db_path: Optional[str] = None
     order_tag: Optional[str] = None
@@ -139,6 +143,8 @@ class GoldAutoTrader:
             use_pullback_limit=self.config.use_pullback_limit,
             min_win_probability=self.config.ml_min_probability,
             runner_t2_multiplier=self.config.runner_target_2_multiplier,
+            broker=self.broker,
+            broker_port=getattr(self.broker, "port", None),
         )
         init_strat_cfg.validate()
         self.strategy_hash = init_strat_cfg.get_hash()
@@ -637,6 +643,19 @@ class GoldAutoTrader:
             self.log_scan(symbol, 0.0, "ERROR_BROKER_UNAVAILABLE", "None", "HOLD", 0, 0.0, f"Broker account error: {e}", {})
             return {"status": "BROKER_UNAVAILABLE", "reason": f"Account query failed: {e}", "timestamp": now}
 
+        # 1b. Live Real Account & Account Identity Execution Guard (P1-17)
+        trade_mode = str(acct.get("trade_mode", "DEMO")).upper()
+        if "LIVE" in trade_mode and not self.config.allow_live_real:
+            logger.critical("LIVE REAL ACCOUNT DETECTED (%s) but allow_live_real is False! Blocking automated execution.", trade_mode)
+            self.log_scan(symbol, 0.0, "REAL_ACCOUNT_BLOCKED", "None", "HOLD", 0, 0.0, "Live real execution blocked: allow_live_real=False", {})
+            return {"status": "BLOCKED", "reason": "Live real account execution blocked without explicit opt-in (allow_live_real=False)", "timestamp": now}
+
+        expected_acc = self.config.expected_account_id
+        if expected_acc and str(acct.get("account_id", "")) != str(expected_acc):
+            logger.critical("ACCOUNT ID MISMATCH: Connected to %s, expected %s! Blocking execution.", acct.get("account_id"), expected_acc)
+            self.log_scan(symbol, 0.0, "ACCOUNT_MISMATCH", "None", "HOLD", 0, 0.0, f"Account mismatch: connected {acct.get('account_id')} != expected {expected_acc}", {})
+            return {"status": "BLOCKED", "reason": f"Account ID mismatch (connected {acct.get('account_id')} != expected {expected_acc})", "timestamp": now}
+
         try:
             open_positions = self.broker.get_open_positions()
         except Exception as e:
@@ -682,6 +701,8 @@ class GoldAutoTrader:
             use_pullback_limit=self.config.use_pullback_limit,
             min_win_probability=self.config.ml_min_probability,
             runner_t2_multiplier=self.config.runner_target_2_multiplier,
+            broker=self.broker,
+            broker_port=getattr(self.broker, "port", None),
         )
         strat_cfg.validate()
 
@@ -876,6 +897,7 @@ class GoldAutoTrader:
         # Check Daily Trade Cap (Max daily trades to preserve capital)
         today_date_str = now_dt.strftime("%Y-%m-%d")
         daily_trades_count = 0
+        trade_cap_query_failed = False
         try:
             with self._db_connection() as conn:
                 cur = conn.cursor()
@@ -885,9 +907,12 @@ class GoldAutoTrader:
                 ).fetchone()
                 daily_trades_count = row[0] if row else 0
         except Exception as e:
-            logger.debug("Failed to query daily trade count: %s", e)
+            logger.error("Failed to query daily trade count: %s", e)
+            trade_cap_query_failed = True
 
-        if self.config.max_daily_trades > 0 and daily_trades_count >= self.config.max_daily_trades:
+        if trade_cap_query_failed and self.config.trade_cap_failure_policy == "FAIL_CLOSED":
+            rejection_reasons.append("Guard Unavailable: Failed to verify daily trade cap from database (trade_cap_failure_policy=FAIL_CLOSED).")
+        elif self.config.max_daily_trades > 0 and daily_trades_count >= self.config.max_daily_trades:
             rejection_reasons.append(
                 f"Daily Trade Cap Reached: {daily_trades_count} trades executed today >= max {self.config.max_daily_trades}. Capital preserved."
             )
@@ -906,7 +931,9 @@ class GoldAutoTrader:
                         f"({diff_m:+.1f}m away). Pausing entries within ±{self.config.news_guard_buffer_minutes}m to eliminate spread spikes."
                     )
             except Exception as e:
-                logger.debug("News catalyst guard check note: %s", e)
+                logger.error("Failed to evaluate news catalyst guard: %s", e)
+                if self.config.news_guard_failure_policy == "FAIL_CLOSED":
+                    rejection_reasons.append(f"Guard Unavailable: News catalyst calendar query failed ({e}). Fail-closed policy active.")
 
         # Check Machine Learning High-Probability Meta-Labeling Gate
         ml_eval = None
@@ -1039,6 +1066,7 @@ class GoldAutoTrader:
 
                         ticket = str(order_result.get("ticket"))
                         filled_price = float(order_result.get("price", price))
+                        executed_lots = float(order_result.get("actual_lots") or order_result.get("lots") or suggested_lots)
                         
                         if candle_time:
                             self.last_trade_bar = str(candle_time)
@@ -1056,7 +1084,7 @@ class GoldAutoTrader:
                             "ticket": ticket,
                             "symbol": symbol,
                             "action": action,
-                            "lots": suggested_lots,
+                            "lots": executed_lots,
                             "entry_price": filled_price,
                             "stop_loss": sl,
                             "target_1": calc_stage1_tp,
@@ -1071,8 +1099,8 @@ class GoldAutoTrader:
                             "partial_realized_usd": 0.0,
                             "initial_stop_loss": sl,
                             "initial_risk_distance": trade_risk_d,
-                            "initial_lots": suggested_lots,
-                            "remaining_lots": suggested_lots,
+                            "initial_lots": executed_lots,
+                            "remaining_lots": executed_lots,
                             "config_hash": getattr(self, "config_hash", ""),
                             "git_sha": getattr(self, "git_sha", ""),
                             "schema_version": getattr(self, "schema_version", "2.0.0"),
@@ -1085,7 +1113,7 @@ class GoldAutoTrader:
                                 (timestamp, ticket, symbol, action, lots, entry_price, stop_loss, target_1, target_2, rr_ratio, status, comment, tp1_taken, peak_price, partial_closed_lots, partial_realized_usd, initial_stop_loss, initial_risk_distance, initial_lots, remaining_lots, config_hash, git_sha, schema_version)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
-                                (now, ticket, symbol, action, suggested_lots, filled_price, sl, calc_stage1_tp, calc_stage2_tp if self.config.enable_runner_trailing else tp2, rr_t1, "OPEN", order_comment, 0, filled_price, 0.0, 0.0, sl, trade_risk_d, suggested_lots, suggested_lots, getattr(self, "config_hash", ""), getattr(self, "git_sha", ""), getattr(self, "schema_version", "2.0.0")),
+                                (now, ticket, symbol, action, executed_lots, filled_price, sl, calc_stage1_tp, calc_stage2_tp if self.config.enable_runner_trailing else tp2, rr_t1, "OPEN", order_comment, 0, filled_price, 0.0, 0.0, sl, trade_risk_d, executed_lots, executed_lots, getattr(self, "config_hash", ""), getattr(self, "git_sha", ""), getattr(self, "schema_version", "2.0.0")),
                             )
                             conn.commit()
 
@@ -1272,12 +1300,15 @@ class GoldAutoTrader:
                                 )
                             close_res = self.broker.close_position(ticket=ticket, lots=close_lots)
                             if close_res.get("status") == "SUCCESS":
-                                scaled_out_lots = float(close_res.get("lots") or close_lots)
-                                scaled_out_usd = round(abs(current_price - open_price) * scaled_out_lots * contract_size, 2)
+                                scaled_out_lots = float(close_res.get("actual_lots") or close_res.get("lots") or close_lots)
+                                if close_res.get("realized_pnl") is not None:
+                                    scaled_out_usd = round(float(close_res["realized_pnl"]), 2)
+                                else:
+                                    scaled_out_usd = round(abs(current_price - open_price) * scaled_out_lots * contract_size, 2)
                                 self._update_close_intent(idempotency_key, status="COMPLETED", closed_lots=scaled_out_lots)
                                 tracked["partial_closed_lots"] = scaled_out_lots
                                 tracked["partial_realized_usd"] = scaled_out_usd
-                                msg = f"🏆 Scaled out {close_lots} lots (+$ {scaled_out_usd:.2f}) at Target 1 for Ticket #{ticket}"
+                                msg = f"🏆 Scaled out {scaled_out_lots} lots (+$ {scaled_out_usd:.2f}) at Target 1 for Ticket #{ticket}"
                                 actions_taken.append(msg)
                                 logger.info(msg)
                             else:
@@ -1285,7 +1316,15 @@ class GoldAutoTrader:
                                 recon_success, recon_lots = self._reconcile_partial_close(ticket, close_lots, initial_lots=float(tracked.get("lots", cur_lots)))
                                 if recon_success:
                                     scaled_out_lots = recon_lots
-                                    scaled_out_usd = round(abs(current_price - open_price) * scaled_out_lots * contract_size, 2)
+                                    deal_pnl = None
+                                    if hasattr(self.broker, "get_deal_history"):
+                                        try:
+                                            deals = self.broker.get_deal_history(ticket=ticket)
+                                            if deals.get("status") == "SUCCESS" and deals.get("deals"):
+                                                deal_pnl = sum(float(d.get("profit", 0.0)) for d in deals["deals"])
+                                        except Exception:
+                                            pass
+                                    scaled_out_usd = round(deal_pnl, 2) if deal_pnl is not None else round(abs(current_price - open_price) * scaled_out_lots * contract_size, 2)
                                     self._update_close_intent(idempotency_key, status="RECONCILED", closed_lots=scaled_out_lots)
                                     tracked["partial_closed_lots"] = scaled_out_lots
                                     tracked["partial_realized_usd"] = scaled_out_usd

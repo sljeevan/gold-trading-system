@@ -52,6 +52,8 @@ class StrategyConfig:
     use_pullback_limit: bool = False
     min_win_probability: float = 0.50
     runner_t2_multiplier: float = 3.0
+    broker: Optional[Any] = None
+    broker_port: Optional[int] = None
 
     def validate(self) -> None:
         """Validate configuration settings, failing fast on invalid/unsupported parameters."""
@@ -71,7 +73,9 @@ class StrategyConfig:
 
     def get_hash(self) -> str:
         """Compute deterministic SHA256 hash of effective configuration."""
-        data = json.dumps(asdict(self), sort_keys=True)
+        d = asdict(self)
+        d.pop("broker", None)
+        data = json.dumps(d, sort_keys=True)
         return hashlib.sha256(data.encode("utf-8")).hexdigest()[:12]
 
 
@@ -661,6 +665,8 @@ def generate_donchian_momentum_hybrid_setup(
     adx_min_threshold: Optional[float] = None,
     require_slope_alignment: bool = True,
     require_broker: bool = False,
+    broker: Optional[Any] = None,
+    broker_port: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     High-Velocity Donchian 10 Touch + SuperTrend + 50 EMA Strategy for Gold (XAUUSD), BTC & ETH.
@@ -671,7 +677,14 @@ def generate_donchian_momentum_hybrid_setup(
     - 50 EMA Slope Alignment: rejects buying when 50 EMA is sloping down, rejects selling when sloping up
     - Regime-Aware ADX Guard: suppresses trades in non-trending sideways consolidation (e.g. ADX < 22 on ETH)
     """
-    candles_entry = fetch_gold_candles(symbol, period="3mo", interval=timeframe, require_broker=require_broker)
+    candles_entry = fetch_gold_candles(
+        symbol,
+        period="3mo",
+        interval=timeframe,
+        require_broker=require_broker,
+        broker=broker,
+        broker_port=broker_port,
+    )
     if len(candles_entry) < 35:
         return {"error": f"Insufficient {timeframe} candle history ({len(candles_entry)}). Need >= 35."}
 
@@ -752,62 +765,93 @@ def generate_donchian_momentum_hybrid_setup(
     # TRIGGER 1: Donchian Channel Breakout / Touch with Price Action Filter
     # -------------------------------------------------------------
     if prev_d_up is not None and prev_d_low is not None:
+        # Determine strict signal bar index and values based on trigger mode (P1-06)
+        if trigger_mode == "CLOSE":
+            sig_idx = -2 if n >= 3 else -1
+            prev_channel_idx = -3 if n >= 3 else -2
+            sig_c = closes[sig_idx]
+            sig_o = opens[sig_idx]
+            sig_h = highs[sig_idx]
+            sig_l = lows[sig_idx]
+            sig_band_up = dc["upper"][prev_channel_idx] if (dc.get("upper") and len(dc["upper"]) >= abs(prev_channel_idx)) else prev_d_up
+            sig_band_low = dc["lower"][prev_channel_idx] if (dc.get("lower") and len(dc["lower"]) >= abs(prev_channel_idx)) else prev_d_low
+            sig_st_dir = st["direction"][sig_idx] if (st.get("direction") and len(st["direction"]) >= abs(sig_idx) and st["direction"][sig_idx] is not None) else st_dir
+            sig_rsi = rsi_series[sig_idx] if (len(rsi_series) >= abs(sig_idx) and rsi_series[sig_idx] is not None) else rsi_val
+            sig_adx = adx_dict["adx"][sig_idx] if (adx_dict and adx_dict.get("adx") and len(adx_dict["adx"]) >= abs(sig_idx) and adx_dict["adx"][sig_idx] is not None) else adx_val
+            
+            # EMA 50 slope strictly on closed signal bar
+            if len(ema50_series) >= 7 and ema50_series[sig_idx] is not None and ema50_series[sig_idx - 5] is not None and ema50_series[sig_idx - 5] > 0:
+                sig_ema50_slope = ((ema50_series[sig_idx] - ema50_series[sig_idx - 5]) / ema50_series[sig_idx - 5]) * 100.0
+            else:
+                sig_ema50_slope = ema50_slope
+
+            sig_macro_ema = ema50_series[sig_idx] if (trend_filter_ema == 50 and len(ema50_series) >= abs(sig_idx)) else (ema200_series[sig_idx] if len(ema200_series) >= abs(sig_idx) else ema200_val)
+            sig_macro_bull = sig_c > sig_macro_ema if sig_macro_ema is not None else True
+            sig_macro_bear = sig_c < sig_macro_ema if sig_macro_ema is not None else True
+        else:
+            sig_idx = -1
+            sig_c = c
+            sig_o = o
+            sig_h = h
+            sig_l = l
+            sig_band_up = prev_d_up
+            sig_band_low = prev_d_low
+            sig_st_dir = st_dir
+            sig_rsi = rsi_val
+            sig_adx = adx_val
+            sig_ema50_slope = ema50_slope
+            sig_macro_bull = macro_bullish
+            sig_macro_bear = macro_bearish
+
+        # ADX regime check on signal bar
+        sig_adx_ok = (eff_adx_threshold <= 0.0) or (sig_adx >= eff_adx_threshold)
+
         # Bullish Breakout / Touch Trigger
         is_bull_trigger = False
         if trigger_mode == "TOUCH":
-            is_bull_trigger = (h >= prev_d_up or c >= prev_d_up) and st_dir == 1 and macro_bullish and rsi_val <= 75.0
+            is_bull_trigger = (sig_h >= sig_band_up or sig_c >= sig_band_up) and sig_st_dir == 1 and sig_macro_bull and sig_rsi <= 75.0
         else:
-            # Close-confirmed Breakout: strictly evaluate completed candle [-2] against prior channel [-3]
-            comp_c = closes[-2] if n >= 3 else c
-            comp_o = opens[-2] if n >= 3 else o
-            comp_band_up = dc["upper"][-3] if n >= 3 else prev_d_up
-            comp_st = st["direction"][-2] if (n >= 3 and st["direction"][-2] is not None) else st_dir
-            is_bull_trigger = comp_c > comp_band_up and comp_c > comp_o and comp_st == 1 and macro_bullish and rsi_val <= 75.0
+            is_bull_trigger = sig_c > sig_band_up and sig_c > sig_o and sig_st_dir == 1 and sig_macro_bull and sig_rsi <= 75.0
 
         # Bearish Breakdown / Touch Trigger
         is_bear_trigger = False
         if trigger_mode == "TOUCH":
-            is_bear_trigger = (l <= prev_d_low or c <= prev_d_low) and st_dir == -1 and macro_bearish and rsi_val >= 25.0
+            is_bear_trigger = (sig_l <= sig_band_low or sig_c <= sig_band_low) and sig_st_dir == -1 and sig_macro_bear and sig_rsi >= 25.0
         else:
-            # Close-confirmed Breakout: strictly evaluate completed candle [-2] against prior channel [-3]
-            comp_c = closes[-2] if n >= 3 else c
-            comp_o = opens[-2] if n >= 3 else o
-            comp_band_low = dc["lower"][-3] if n >= 3 else prev_d_low
-            comp_st = st["direction"][-2] if (n >= 3 and st["direction"][-2] is not None) else st_dir
-            is_bear_trigger = comp_c < comp_band_low and comp_c < comp_o and comp_st == -1 and macro_bearish and rsi_val >= 25.0
+            is_bear_trigger = sig_c < sig_band_low and sig_c < sig_o and sig_st_dir == -1 and sig_macro_bear and sig_rsi >= 25.0
 
         # ADX regime check
-        if not adx_ok:
+        if not sig_adx_ok:
             if is_bull_trigger or is_bear_trigger:
-                reasons.append(f"Regime Guard: 1H ADX({adx_val:.1f}) < {eff_adx_threshold:.1f}. Sideways consolidation filter active.")
+                reasons.append(f"Regime Guard: 1H ADX({sig_adx:.1f}) < {eff_adx_threshold:.1f}. Sideways consolidation filter active.")
             is_bull_trigger = False
             is_bear_trigger = False
 
         # EMA 50 Slope direction check
         if require_slope_alignment:
-            if is_bull_trigger and ema50_slope < 0.0:
-                reasons.append(f"Slope Guard: 50 EMA slope is negative ({ema50_slope:.3f}%). Rejecting BUY against slope.")
+            if is_bull_trigger and sig_ema50_slope < 0.0:
+                reasons.append(f"Slope Guard: 50 EMA slope is negative ({sig_ema50_slope:.3f}%). Rejecting BUY against slope.")
                 is_bull_trigger = False
-            elif is_bear_trigger and ema50_slope > 0.0:
-                reasons.append(f"Slope Guard: 50 EMA slope is positive ({ema50_slope:.3f}%). Rejecting SELL against slope.")
+            elif is_bear_trigger and sig_ema50_slope > 0.0:
+                reasons.append(f"Slope Guard: 50 EMA slope is positive ({sig_ema50_slope:.3f}%). Rejecting SELL against slope.")
                 is_bear_trigger = False
 
         min_body = max(1.0, 0.15 * atr_val)
 
         if is_bull_trigger:
-            body = max(c - o, 0.0)
-            upper_wick = h - max(c, o)
+            body = max(sig_c - sig_o, 0.0)
+            upper_wick = sig_h - max(sig_c, sig_o)
             wick_ok = upper_wick <= 1.8 * max(body, min_body)
-            candle_ok = (c >= o)  # Not an adverse red candle
+            candle_ok = (sig_c >= sig_o)  # Not an adverse red candle
             if wick_ok and candle_ok:
                 action = "BUY"
                 mode_tag = "Touch" if trigger_mode == "TOUCH" else "Breakout"
                 setup_name = f"Donchian {donchian_period}-Bar {mode_tag} + SuperTrend"
                 quality_score = 92
-                reasons.append(f"Price reached {donchian_period}-bar Donchian High (${prev_d_up:.2f})")
+                reasons.append(f"Price reached {donchian_period}-bar Donchian High (${sig_band_up:.2f})")
                 reasons.append("SuperTrend(10, 3.0) is Bullish (Green)")
                 reasons.append(f"Macro Trend is Bullish above {macro_desc}")
-                reasons.append(f"50 EMA Slope Confirmed ({ema50_slope:+.3f}%)")
+                reasons.append(f"50 EMA Slope Confirmed ({sig_ema50_slope:+.3f}%)")
                 reasons.append(f"Targeting Fast {rr_multiplier}R Profit Objective")
                 if is_overlap:
                     quality_score += 3
@@ -821,19 +865,19 @@ def generate_donchian_momentum_hybrid_setup(
                 reasons.append(f"Breakout rejected by Price Action: {'; '.join(fail_reasons)}")
 
         elif is_bear_trigger:
-            body = max(o - c, 0.0)
-            lower_wick = min(c, o) - l
+            body = max(sig_o - sig_c, 0.0)
+            lower_wick = min(sig_c, sig_o) - sig_l
             wick_ok = lower_wick <= 1.8 * max(body, min_body)
-            candle_ok = (c <= o)  # Not an adverse green candle
+            candle_ok = (sig_c <= sig_o)  # Not an adverse green candle
             if wick_ok and candle_ok:
                 action = "SELL"
                 mode_tag = "Touch" if trigger_mode == "TOUCH" else "Breakdown"
                 setup_name = f"Donchian {donchian_period}-Bar {mode_tag} + SuperTrend"
                 quality_score = 92
-                reasons.append(f"Price reached {donchian_period}-bar Donchian Low (${prev_d_low:.2f})")
+                reasons.append(f"Price reached {donchian_period}-bar Donchian Low (${sig_band_low:.2f})")
                 reasons.append("SuperTrend(10, 3.0) is Bearish (Red)")
                 reasons.append(f"Macro Trend is Bearish below {macro_desc}")
-                reasons.append(f"50 EMA Slope Confirmed ({ema50_slope:+.3f}%)")
+                reasons.append(f"50 EMA Slope Confirmed ({sig_ema50_slope:+.3f}%)")
                 reasons.append(f"Targeting Fast {rr_multiplier}R Profit Objective")
                 if is_overlap:
                     quality_score += 3
@@ -1077,6 +1121,8 @@ def generate_compounding_ladder_setup(
             require_slope_alignment=cfg.require_slope_alignment,
             runner_t2_multiplier=cfg.runner_t2_multiplier,
             require_broker=require_broker,
+            broker=cfg.broker,
+            broker_port=cfg.broker_port,
         )
         if "error" in setup_data:
             return setup_data
@@ -1135,7 +1181,14 @@ def generate_compounding_ladder_setup(
     try:
         from gold_trader.core.ml_filter import GoldMLPredictor
         predictor = GoldMLPredictor(symbol=symbol)
-        candles_entry = fetch_gold_candles(symbol, period="1mo", interval=effective_tf, require_broker=require_broker)
+        candles_entry = fetch_gold_candles(
+            symbol,
+            period="1mo",
+            interval=effective_tf,
+            require_broker=require_broker,
+            broker=cfg.broker,
+            broker_port=cfg.broker_port,
+        )
         if len(candles_entry) >= 100:
             ml_result = predictor.predict_trade_probability(
                 candles_entry,

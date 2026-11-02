@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import socket
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
@@ -139,6 +140,10 @@ class SocketBroker(BaseBroker):
             "margin_level_pct": round(float(resp.get("margin_level_pct", 0.0)), 2),
             "leverage": int(resp.get("leverage", 100)),
             "currency": str(resp.get("currency", "USD")),
+            "trade_mode": str(resp.get("trade_mode", "DEMO")),
+            "trade_allowed": bool(resp.get("trade_allowed", True)),
+            "server": str(server_name),
+            "company": str(resp.get("company", "XM Global")),
         }
 
     def get_open_positions(self, symbol: Optional[str] = None) -> List[Position]:
@@ -182,6 +187,7 @@ class SocketBroker(BaseBroker):
         order_type: Literal["MARKET", "LIMIT"] = "MARKET",
     ) -> OrderResult:
         now_str = datetime.now(timezone.utc).isoformat()
+        client_order_id = str(uuid.uuid4().hex[:8])
         payload = {
             "command": "PLACE_ORDER",
             "symbol": symbol,
@@ -190,6 +196,7 @@ class SocketBroker(BaseBroker):
             "sl": float(sl) if sl is not None else 0.0,
             "tp": float(tp) if tp is not None else 0.0,
             "comment": comment,
+            "client_order_id": client_order_id,
             "order_type": order_type.upper(),
             "price": float(price) if price is not None else 0.0,
         }
@@ -212,16 +219,33 @@ class SocketBroker(BaseBroker):
                 matching = [
                     p for p in open_positions
                     if p.get("symbol") == actual_symbol
-                    and (comment and comment in str(p.get("comment", "")))
+                    and (not p.get("side") or str(p.get("side", "")).upper() == side.upper())
+                    and ((client_order_id and client_order_id in str(p.get("comment", ""))) or (comment and comment in str(p.get("comment", ""))))
                 ]
-                if matching:
-                    matched = matching[-1]
+                if not matching and hasattr(self, "get_pending_orders"):
+                    try:
+                        pending = self.get_pending_orders()
+                        matching = [
+                            po for po in pending
+                            if po.get("symbol") == actual_symbol
+                            and (not po.get("side") or str(po.get("side", "")).upper() == side.upper())
+                            and ((client_order_id and client_order_id in str(po.get("comment", ""))) or (comment and comment in str(po.get("comment", ""))))
+                        ]
+                    except Exception:
+                        pass
+
+                if len(matching) == 1:
+                    matched = matching[0]
                     ticket = str(matched.get("ticket"))
-                    filled_or_target_price = float(matched.get("open_price", filled_or_target_price))
+                    filled_or_target_price = float(matched.get("open_price", matched.get("price", filled_or_target_price)))
                     actual_sl = matched.get("sl", actual_sl)
                     actual_tp = matched.get("tp", actual_tp)
                     status = "SUCCESS"
                     msg = f"Order verified via post-timeout reconciliation (Ticket #{ticket})"
+                elif len(matching) > 1:
+                    msg += f" (Reconciliation ambiguous: found {len(matching)} matching positions; failing closed)"
+                else:
+                    msg += f" (Reconciliation failed: no broker position matching client_order_id {client_order_id} found)"
             except Exception as recon_err:
                 msg += f" (Reconciliation error: {recon_err})"
 
@@ -266,15 +290,20 @@ class SocketBroker(BaseBroker):
                 "timestamp": now_str,
             }
 
+        actual_lots = float(resp.get("actual_lots", resp.get("lots", lots)))
+        deal_ticket = resp.get("deal_ticket")
         return {
             "status": "SUCCESS" if status == "SUCCESS" else "REJECTED",
             "ticket": ticket,
             "symbol": actual_symbol,
             "action": side,
             "lots": lots,
+            "actual_lots": actual_lots,
             "price": filled_or_target_price,
             "sl": actual_sl,
             "tp": actual_tp,
+            "deal_ticket": deal_ticket,
+            "client_order_id": client_order_id,
             "message": msg,
             "timestamp": now_str,
         }
@@ -343,7 +372,13 @@ class SocketBroker(BaseBroker):
             "symbol": str(resp.get("symbol", "XAUUSD")),
             "action": "CLOSE",
             "lots": closed_lots,
+            "actual_lots": float(resp.get("actual_lots", closed_lots)),
+            "remaining_lots": float(resp.get("remaining_lots")) if resp.get("remaining_lots") is not None else None,
             "price": price,
+            "deal_ticket": resp.get("deal_ticket"),
+            "realized_pnl": float(resp.get("realized_pnl")) if resp.get("realized_pnl") is not None else None,
+            "commission": float(resp.get("commission", 0.0)),
+            "swap": float(resp.get("swap", 0.0)),
             "sl": None,
             "tp": None,
             "message": msg,

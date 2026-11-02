@@ -90,6 +90,8 @@ def fetch_gold_candles(
     period: str = "3mo",
     interval: str = "1h",
     require_broker: bool = False,
+    broker: Optional[Any] = None,
+    broker_port: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Fetch OHLCV candles with live MT5 broker priority for Gold intraday and Yahoo Finance fallback.
@@ -107,10 +109,12 @@ def fetch_gold_candles(
     # 1. If Gold or Crypto symbol on intraday/swing timeframe, check live MT5 broker for real-time rates
     if is_live_broker_sym and interval in ("1m", "5m", "15m", "30m", "1h") and period in ("1d", "5d", "1mo", "3mo", "6mo"):
         try:
-            from gold_trader.brokers.socket_broker import SocketBroker
-            broker = SocketBroker()
+            active_broker = broker
+            if active_broker is None:
+                from gold_trader.brokers.socket_broker import SocketBroker
+                active_broker = SocketBroker(port=broker_port) if broker_port else SocketBroker()
             count = calculate_required_candle_count(period=period, interval=interval, is_crypto=is_crypto)
-            rates = broker.get_rates(symbol=broker_sym, timeframe=interval, count=count)
+            rates = active_broker.get_rates(symbol=broker_sym, timeframe=interval, count=count)
             if rates and len(rates) >= 30:
                 for r in rates:
                     r.setdefault("source", "MT5_BROKER")

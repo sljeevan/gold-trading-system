@@ -15,12 +15,16 @@ from datetime import datetime, timezone, timedelta
 import argparse
 from typing import Any, Dict
 
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None
 
 HOST = "127.0.0.1"
 PORT = 8888
 PATH = r"C:\Program Files\XM Global MT5\terminal64.exe"
 ENV_PREFIX = "XM_DEMO"
+mt5_lock = threading.RLock()
 
 def get_env_credentials():
     login = 168987477
@@ -44,6 +48,8 @@ def get_env_credentials():
     return login, password, server
 
 def ensure_mt5():
+    if mt5 is None:
+        return False
     login, password, server = get_env_credentials()
     if not mt5.initialize(path=PATH, login=login, password=password, server=server, timeout=60000):
         print(f"[{datetime.now()}] mt5.initialize failed: {mt5.last_error()}", flush=True)
@@ -77,16 +83,9 @@ def map_symbol(requested: str) -> str:
                 return c
     return requested_upper
 
-def handle_client(conn: socket.socket, addr: Any):
-    try:
-        data = conn.recv(8192)
-        if not data:
-            return
-        
-        raw_text = data.decode("utf-8", errors="replace").strip()
-        req = json.loads(raw_text)
-        
-        # Support both 'command' and 'action'
+def process_bridge_command(req: Dict[str, Any]) -> Dict[str, Any]:
+    """Process incoming MT5 bridge command under global execution mutex lock."""
+    with mt5_lock:
         cmd = req.get("command", req.get("action", "")).upper()
         
         mt5_initialized = ensure_mt5()
@@ -301,6 +300,12 @@ def handle_client(conn: socket.socket, addr: Any):
             sl = float(req.get("sl", 0.0)) if req.get("sl") else 0.0
             tp = float(req.get("tp", 0.0)) if req.get("tp") else 0.0
             comment = req.get("comment", "GoldTrader-AI")
+            client_order_id = str(req.get("client_order_id", "")).strip()
+            if client_order_id:
+                if len(comment) + len(client_order_id) + 1 <= 31:
+                    comment = f"{comment}_{client_order_id}"
+                else:
+                    comment = f"{comment[:21]}_{client_order_id[:8]}"
             
             mt5.symbol_select(symbol, True)
             info = mt5.symbol_info(symbol)
@@ -350,9 +355,12 @@ def handle_client(conn: socket.socket, addr: Any):
                             "symbol": symbol,
                             "action": side_str,
                             "lots": lots,
+                            "actual_lots": lots,
                             "price": target_price,
                             "sl": target_sl if target_sl > 0 else None,
                             "tp": target_tp if target_tp > 0 else None,
+                            "deal_ticket": str(getattr(result, "deal", "")),
+                            "client_order_id": client_order_id if client_order_id else None,
                             "message": f"XM Limit Order #{ticket} placed: {side_str} {lots} lots @ {target_price}",
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
@@ -506,17 +514,22 @@ def handle_client(conn: socket.socket, addr: Any):
                             }
                         else:
                             verified_item = v_pos[0] if (v_pos and len(v_pos) > 0) else None
+                            exec_lots = float(verified_item.volume) if verified_item else lots
+                            exec_price = float(verified_item.price_open) if verified_item else filled_price
                             resp = {
                                 "status": "SUCCESS",
                                 "ticket": str(pos_ticket),
                                 "symbol": symbol,
                                 "action": side_str,
-                                "lots": float(verified_item.volume) if verified_item else lots,
-                                "price": float(verified_item.price_open) if verified_item else filled_price,
+                                "lots": exec_lots,
+                                "actual_lots": exec_lots,
+                                "price": exec_price,
                                 "sl": float(verified_item.sl) if (verified_item and verified_item.sl) else None,
                                 "tp": float(verified_item.tp) if (verified_item and verified_item.tp) else None,
+                                "deal_ticket": str(getattr(result, "deal", "")),
+                                "client_order_id": client_order_id if client_order_id else None,
                                 "sl_verified": True,
-                                "message": f"XM {side_str} {lots} lots of {symbol} executed and protection verified. Ticket #{pos_ticket}",
+                                "message": f"XM {side_str} {exec_lots} lots of {symbol} executed and protection verified. Ticket #{pos_ticket}",
                                 "timestamp": datetime.now(timezone.utc).isoformat(),
                             }
                     else:
@@ -552,15 +565,39 @@ def handle_client(conn: socket.socket, addr: Any):
                 }
                 res = mt5.order_send(close_req)
                 if res and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+                    deal_ticket = str(getattr(res, "deal", ""))
+                    deal_pnl = None
+                    commission = 0.0
+                    swap = 0.0
+                    exec_price = float(getattr(res, "price", 0.0)) or float(close_price)
+                    exec_vol = float(close_vol)
+                    if getattr(res, "deal", None):
+                        try:
+                            deals = mt5.history_deals_get(ticket=res.deal)
+                            if deals and len(deals) > 0:
+                                d = deals[0]
+                                deal_pnl = float(getattr(d, "profit", 0.0))
+                                commission = float(getattr(d, "commission", 0.0))
+                                swap = float(getattr(d, "swap", 0.0))
+                                exec_price = float(getattr(d, "price", exec_price))
+                                exec_vol = float(getattr(d, "volume", exec_vol))
+                        except Exception:
+                            pass
+
                     resp = {
                         "status": "SUCCESS",
                         "ticket": str(ticket),
                         "symbol": pos.symbol,
                         "action": "CLOSE",
-                        "lots": float(close_vol),
-                        "remaining_lots": round(pos.volume - close_vol, 2),
-                        "price": float(close_price),
-                        "message": f"Position #{ticket} closed {close_vol} lots on XM at {close_price}",
+                        "lots": float(exec_vol),
+                        "actual_lots": float(exec_vol),
+                        "remaining_lots": round(pos.volume - exec_vol, 2),
+                        "price": float(exec_price),
+                        "deal_ticket": deal_ticket,
+                        "realized_pnl": deal_pnl,
+                        "commission": commission,
+                        "swap": swap,
+                        "message": f"Position #{ticket} closed {exec_vol} lots on XM at {exec_price}",
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                 else:
@@ -687,12 +724,23 @@ def handle_client(conn: socket.socket, addr: Any):
         else:
             resp = {"status": "ERROR", "message": f"Unknown command: {cmd}"}
 
+        return resp
+
+def handle_client(conn: socket.socket, addr: Any):
+    try:
+        data = conn.recv(8192)
+        if not data:
+            return
+        
+        raw_text = data.decode("utf-8", errors="replace").strip()
+        req = json.loads(raw_text)
+        resp = process_bridge_command(req)
         conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
     except Exception as e:
         err_resp = {"status": "ERROR", "message": str(e)}
         try:
             conn.sendall((json.dumps(err_resp) + "\n").encode("utf-8"))
-        except:
+        except Exception:
             pass
     finally:
         conn.close()

@@ -72,7 +72,7 @@ class TradeSetup(TypedDict):
     timestamp: str
 
 
-class AccountInfo(TypedDict):
+class AccountInfo(TypedDict, total=False):
     broker: str
     account_id: str
     balance: float
@@ -82,9 +82,13 @@ class AccountInfo(TypedDict):
     margin_level_pct: float
     leverage: int
     currency: str
+    trade_mode: Optional[str]
+    trade_allowed: Optional[bool]
+    server: Optional[str]
+    company: Optional[str]
 
 
-class Position(TypedDict):
+class Position(TypedDict, total=False):
     ticket: str
     symbol: str
     side: Literal["BUY", "SELL"]
@@ -98,14 +102,21 @@ class Position(TypedDict):
     comment: str
 
 
-class OrderResult(TypedDict):
-    status: Literal["SUCCESS", "REJECTED", "ERROR"]
+class OrderResult(TypedDict, total=False):
+    status: Literal["SUCCESS", "REJECTED", "ERROR", "EMERGENCY_PROTECTION_FAILED"]
     ticket: Optional[str]
     symbol: str
     action: str
     lots: float
+    actual_lots: Optional[float]
     price: float
     sl: Optional[float]
     tp: Optional[float]
+    deal_ticket: Optional[str]
+    client_order_id: Optional[str]
+    realized_pnl: Optional[float]
+    commission: Optional[float]
+    swap: Optional[float]
+    remaining_lots: Optional[float]
     message: str
     timestamp: str

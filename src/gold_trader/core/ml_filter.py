@@ -296,13 +296,18 @@ def purged_walk_forward_cv(
     2. Training set is drawn strictly from folds 0..k.
     3. PURGING: Any training trade whose holding window [t_entry, t_entry + max_holding_bars]
        overlaps with or extends past the first entry bar of the validation set is dropped.
-    4. EMBARGO: Discards observations immediately after validation boundaries.
+    4. EMBARGO: Enforces an embargo gap of pct_embargo bars between training and validation.
+       Fails closed (raises ValueError) if valid purged folds cannot be formed without lookahead.
     """
     n_samples = len(bar_indices)
+    if n_samples < 20:
+        raise ValueError(f"Insufficient sample size ({n_samples} samples) to form purged walk-forward CV folds.")
+
     chunk_size = n_samples // (n_splits + 1)
-    if chunk_size < 10:
-        tscv = TimeSeriesSplit(n_splits=min(n_splits, max(2, n_samples // 5)))
-        return list(tscv.split(np.arange(n_samples)))
+    if chunk_size < 5:
+        raise ValueError(f"Chunk size ({chunk_size}) too small for {n_splits} splits on {n_samples} samples.")
+
+    embargo_bars = int(round(n_samples * pct_embargo)) if pct_embargo > 0 else 0
 
     splits = []
     for fold in range(n_splits):
@@ -312,18 +317,20 @@ def purged_walk_forward_cv(
         val_idx = np.arange(val_start_idx, val_end_idx)
         val_start_bar = min(bar_indices[idx] for idx in val_idx)
 
-        # Purge training samples whose forward holding window reaches into validation
+        # Purge training samples whose forward holding window (+ embargo) reaches into validation
         clean_train_idx = [
             i for i in range(val_start_idx)
-            if (bar_indices[i] + max_holding_bars) < val_start_bar
+            if (bar_indices[i] + max_holding_bars + embargo_bars) < val_start_bar
         ]
 
-        if len(clean_train_idx) >= 10 and len(val_idx) >= 5:
+        if len(clean_train_idx) >= 5 and len(val_idx) >= 5:
             splits.append((np.array(clean_train_idx, dtype=int), val_idx))
 
     if not splits:
-        tscv = TimeSeriesSplit(n_splits=n_splits)
-        return list(tscv.split(np.arange(n_samples)))
+        raise ValueError(
+            f"Cannot form valid purged walk-forward folds without lookahead for {n_samples} samples "
+            f"with max_holding_bars={max_holding_bars} and pct_embargo={pct_embargo}."
+        )
 
     return splits
 
