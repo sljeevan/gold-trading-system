@@ -78,8 +78,9 @@ The trading engine executes strictly under **Flat Dollar Risk Allocation** on a 
    - *Stage 1 (Partial Scale-Out)*: At Target 1 (+1.25R for Gold [+$102 avg win], +1.0R for BTC & ETH), 50% volume is closed into realized cash for positions $\ge 0.02$ lots.
    - *Stage 2 (Risk-Free Runner)*: Remaining stop-loss moves to Break-Even + offset ($+\$0.50$ Gold, $+\$30.00$ BTC, $+\$2.00$ ETH), locking in a risk-free runner.
    - *Stage 3 (Dynamic Wide Trail)*: Runner trailing stop follows price with an ATR-cleared buffer ($4.50 Gold, $350 BTC, $10 ETH) behind peak excursion up to Target 2 (3.0R).
-4. **Adaptive Dual-Speed Polling Loop**:
-   - *Idle State (`open_positions == 0`)*: 60-second cycle for 1H candle fetches, ML Meta-Labeling predictions, and wholesale entry evaluation.
+4. **Two-Tier High-Velocity Polling Loop**:
+   - *Tier 1 (Macro Strategy Watcher - 60s / Bar Boundary)*: Fetches 1H candles, computes SuperTrend, 50 EMA slope alignment, ADX, and pre-screens ML Meta-Labeling conviction ($\ge 0.50$). If conditions pass, **arms the exact Donchian Upper/Lower boundary trigger** in memory.
+   - *Tier 2 (Micro Execution Loop - 1.0s Tick Polling)*: Polls lightweight live bid/ask quotes from the MT5 bridge every 1.0 second (~15ms latency). The instant price touches the armed boundary, fires an immediate market order (< 1.0s latency), eliminating momentum-extension slippage and locking entries at the wholesale channel edge.
    - *In-Trade State (`open_positions > 0`)*: 5-second fast cycle focused exclusively on peak excursion tracking, +1.0R scale-outs, break-even locking, trailing stops, and instant exit notifications with zero DB bloat.
 2. **`COMPOUNDING_HYBRID` (1H Donchian 15 Breakout)**:
    - **Engine**: 1H Donchian 15 Breakout + MACD Momentum continuation + 200 EMA trend filter.

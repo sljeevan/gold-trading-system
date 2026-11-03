@@ -56,6 +56,8 @@ class AutoTraderConfig:
     scan_interval_seconds: int = 60
     active_interval_seconds: int = 5
     enable_adaptive_dual_speed: bool = True
+    enable_two_tier_polling: bool = True
+    micro_polling_interval_seconds: float = 1.0
     auto_execute: bool = True
     trail_to_breakeven_at_t1: bool = True
     send_telegram_alerts: bool = True
@@ -1161,6 +1163,18 @@ class GoldAutoTrader:
             except Exception as dr_err:
                 logger.error(f"Failed to trigger daily report: {dr_err}")
 
+        armed_trigger = None
+        if not order_result and action == "HOLD":
+            armed_trigger = self._check_and_arm_setup(setup, balance)
+            if armed_trigger:
+                act = armed_trigger["action"]
+                tp = armed_trigger["trigger_price"]
+                p_win = armed_trigger.get("ml_prob", 0.50)
+                logger.info(
+                    f"🎯 [Tier 1 Armed] Ready for 1-Second Touch Trigger: {symbol} {act} @ ${tp:.2f} "
+                    f"(SL Dist: ${armed_trigger['sl_dist']:.2f}, Lots: {armed_trigger['lots']}, ML: {p_win:.1%})"
+                )
+
         return {
             "timestamp": now,
             "symbol": symbol,
@@ -1178,7 +1192,306 @@ class GoldAutoTrader:
             "open_positions_count": len(open_positions),
             "order_result": order_result,
             "managed_actions": managed_actions,
+            "armed_trigger": armed_trigger,
         }
+
+    def _check_and_arm_setup(self, setup: Dict[str, Any], balance: float) -> Optional[Dict[str, Any]]:
+        """
+        Evaluate if a pending Donchian breakout touch setup can be armed for Tier 2 1-second micro-loop execution.
+        Pre-screens: 50 EMA trend, SuperTrend, 50 EMA slope alignment, ADX regime, session filter, daily cap,
+        bar lock, loss cooldown, news guard, and ML probability threshold.
+        """
+        if not getattr(self.config, "enable_two_tier_polling", True):
+            return None
+
+        is_touch = self.config.mode in ("FLAT_RISK_TOUCH", "COMPOUNDING_TOUCH", "HIGH_VELOCITY_TOUCH")
+        if not is_touch:
+            return None
+
+        setup_details = setup.get("setup_details", {})
+        d_up = setup_details.get("donchian_upper")
+        d_low = setup_details.get("donchian_lower")
+        st_dir = setup_details.get("supertrend_direction", 0)
+        bias = str(setup_details.get("bias", "NEUTRAL")).upper()
+        candle_time = setup.get("candle_time")
+
+        if d_up is None or d_low is None or not candle_time:
+            return None
+
+        d_up = float(d_up)
+        d_low = float(d_low)
+
+        cand_action = None
+        trig_price = 0.0
+        if bias == "BULLISH" and st_dir == 1:
+            cand_action = "BUY"
+            trig_price = d_up
+        elif bias == "BEARISH" and st_dir == -1:
+            cand_action = "SELL"
+            trig_price = d_low
+        else:
+            return None
+
+        symbol = self.config.symbol
+        now_dt = datetime.now(timezone.utc)
+        now_ts = now_dt.timestamp()
+
+        # 1. Bar Lock
+        if self.config.one_trade_per_bar and candle_time:
+            if self.last_trade_bar == str(candle_time):
+                return None
+
+        # 2. Loss Cooldown
+        if self.cooldown_until and now_ts < self.cooldown_until:
+            return None
+
+        # 3. Weekend / Session Filter
+        is_crypto = "BTC" in symbol.upper() or "ETH" in symbol.upper()
+        if not is_crypto:
+            is_weekend = (
+                (now_dt.weekday() == 4 and now_dt.hour >= 21)
+                or now_dt.weekday() == 5
+                or (now_dt.weekday() == 6 and (now_dt.hour < 22 or (now_dt.hour == 22 and now_dt.minute < 5)))
+            )
+            if is_weekend:
+                return None
+
+        if self.config.session_filter:
+            if not (self.config.session_start_hour_utc <= now_dt.hour < self.config.session_end_hour_utc):
+                return None
+
+        # 4. Daily Trade Cap
+        today_date_str = now_dt.strftime("%Y-%m-%d")
+        daily_trades_count = 0
+        try:
+            with self._db_connection() as conn:
+                cur = conn.cursor()
+                row = cur.execute(
+                    "SELECT COUNT(*) FROM trade_executions WHERE (timestamp LIKE ? OR close_time LIKE ?)",
+                    (f"{today_date_str}%", f"{today_date_str}%"),
+                ).fetchone()
+                daily_trades_count = row[0] if row else 0
+        except Exception:
+            daily_trades_count = 0
+
+        if self.config.max_daily_trades > 0 and daily_trades_count >= self.config.max_daily_trades:
+            return None
+
+        # 5. News Catalyst Guard
+        if self.config.enable_news_catalyst_guard:
+            try:
+                from gold_trader.core.openbb_feed import check_high_impact_news_window
+                news_status = check_high_impact_news_window(buffer_minutes=self.config.news_guard_buffer_minutes)
+                if news_status.get("is_in_news_window"):
+                    return None
+            except Exception:
+                if self.config.news_guard_failure_policy == "FAIL_CLOSED":
+                    return None
+
+        # 6. 50 EMA Slope Alignment Guard
+        if self.config.require_slope_alignment:
+            ema50_slope = float(setup_details.get("ema50_slope", 0.0))
+            if cand_action == "BUY" and ema50_slope < 0.0:
+                return None
+            elif cand_action == "SELL" and ema50_slope > 0.0:
+                return None
+
+        # 7. ADX Regime Guard
+        if self.config.adx_min_threshold is not None:
+            adx_val = float(setup_details.get("adx", 25.0))
+            if adx_val < self.config.adx_min_threshold:
+                return None
+
+        # 8. ML Filter Gatekeeper
+        ml_prob = 0.50
+        if self.config.enable_ml_filter or self.config.ml_required:
+            try:
+                from gold_trader.core.ml_filter import GoldMLPredictor
+                predictor = GoldMLPredictor(model_path=self.config.ml_model_path, symbol=symbol)
+                candles_eval = fetch_gold_candles(symbol, period="1mo", interval=self.config.timeframe, require_broker=self.config.require_broker)
+                if not candles_eval or len(candles_eval) < 200:
+                    return None
+                ml_eval = predictor.predict_trade_probability(
+                    candles_eval,
+                    direction=cand_action,
+                    min_probability_threshold=self.config.ml_min_probability,
+                    use_closed_bar=True,
+                )
+                if ml_eval.get("status") == "ERROR" or not ml_eval.get("is_high_conviction"):
+                    return None
+                ml_prob = float(ml_eval.get("probability_win", 0.50))
+            except Exception:
+                if self.config.ml_required or self.config.ml_failure_policy == "FAIL_CLOSED":
+                    return None
+
+        # 9. Stop Loss & Target Distance
+        is_btc = "BTC" in symbol.upper()
+        is_eth = "ETH" in symbol.upper()
+        min_pts = 500.0 if is_btc else (20.0 if is_eth else 8.0)
+        atr_val = float(setup_details.get("atr") or min_pts)
+        sl_dist = max(1.5 * atr_val, min_pts)
+        tp1_dist = sl_dist * self.config.min_risk_reward
+        tp2_dist = sl_dist * self.config.runner_target_2_multiplier
+
+        # 10. Position Sizing
+        contract_size = 1.0 if (is_btc or is_eth) else 100.0
+        if self.config.flat_risk:
+            planned_risk = self.config.fixed_risk_usd
+            lots = round(planned_risk / (sl_dist * contract_size), 2)
+            lots = max(0.01, lots)
+        else:
+            planned_risk = balance * (self.config.risk_pct_per_trade / 100.0)
+            lots = calculate_lot_size(
+                account_balance=balance,
+                risk_pct=self.config.risk_pct_per_trade,
+                entry_price=trig_price,
+                stop_loss=trig_price - sl_dist if cand_action == "BUY" else trig_price + sl_dist,
+                contract_size=contract_size,
+            )
+        if is_eth:
+            lots = max(0.02, lots)
+
+        armed = {
+            "action": cand_action,
+            "trigger_price": trig_price,
+            "trigger_condition": "BID_GTE" if cand_action == "BUY" else "ASK_LTE",
+            "sl_dist": sl_dist,
+            "tp1_dist": tp1_dist,
+            "tp2_dist": tp2_dist,
+            "lots": lots,
+            "candle_time": candle_time,
+            "setup_name": f"{self.config.timeframe.upper()} Donchian {self.config.donchian_period} Touch (Flat Risk ${self.config.fixed_risk_usd:.2f})",
+            "rr_t1": self.config.min_risk_reward,
+            "ml_prob": ml_prob,
+        }
+        return armed
+
+    def execute_armed_order(self, armed_trigger: Dict[str, Any], sym_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute an armed intrabar trigger immediately via Tier 2 1-second high-velocity execution.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        symbol = self.config.symbol
+        action = armed_trigger["action"]
+        suggested_lots = armed_trigger["lots"]
+        sl_dist = armed_trigger["sl_dist"]
+        tp1_dist = armed_trigger["tp1_dist"]
+        tp2_dist = armed_trigger["tp2_dist"]
+        rr_t1 = armed_trigger.get("rr_t1", self.config.min_risk_reward)
+        candle_time = armed_trigger.get("candle_time")
+        setup_name = armed_trigger.get("setup_name", f"{self.config.timeframe.upper()} Donchian 10 Touch")
+
+        b_bid = float(sym_info.get("bid", 0.0))
+        b_ask = float(sym_info.get("ask", 0.0))
+        broker_entry = b_ask if action == "BUY" else b_bid
+
+        if action == "BUY":
+            sl = round(broker_entry - sl_dist, 2)
+            tp1 = round(broker_entry + tp1_dist, 2)
+            tp2 = round(broker_entry + tp2_dist, 2) if self.config.enable_runner_trailing else tp1
+        else:
+            sl = round(broker_entry + sl_dist, 2)
+            tp1 = round(broker_entry - tp1_dist, 2)
+            tp2 = round(broker_entry - tp2_dist, 2) if self.config.enable_runner_trailing else tp1
+
+        order_comment = f"{self.config.order_tag}-{symbol}" if self.config.order_tag else f"AI-FlatRisk-{symbol}"
+        actual_tp = tp2 if (self.config.enable_partial_scale_out or self.config.enable_runner_trailing) and tp2 else tp1
+
+        try:
+            order_result = self.broker.place_order(
+                symbol="GOLD" if "GOLD" in symbol else symbol,
+                side=action,
+                lots=suggested_lots,
+                sl=sl,
+                tp=actual_tp,
+                comment=order_comment,
+                order_type="MARKET",
+            )
+            res_status = order_result.get("status")
+            if res_status == "SUCCESS":
+                order_sl = order_result.get("sl")
+                if sl is not None and float(sl) > 0 and (order_sl is None or float(order_sl) <= 0):
+                    logger.critical("🚨 Protective SL missing from confirmed trade! Triggering emergency lockout.")
+                    self.lockout = True
+                    self._save_state("lockout", "true")
+                    if self.config.send_telegram_alerts:
+                        self.notifier.send_error_alert(f"🚨 CRITICAL SAFETY BREACH: Trade on {symbol} lacks verified SL! Emergency lockout active.")
+                    return {"status": "EMERGENCY_PROTECTION_FAILED", "message": "Position lacks verified SL", "timestamp": now}
+
+                ticket = str(order_result.get("ticket"))
+                filled_price = float(order_result.get("price", broker_entry))
+                executed_lots = float(order_result.get("actual_lots") or order_result.get("lots") or suggested_lots)
+
+                if candle_time:
+                    self.last_trade_bar = str(candle_time)
+                    self._save_state("last_trade_bar", str(candle_time))
+                    logger.info(f"🔒 Bar Lock engaged for candle bar: {candle_time}")
+
+                is_btc_t = "BTC" in symbol.upper()
+                is_eth_t = "ETH" in symbol.upper()
+                default_sl_d = 500.0 if is_btc_t else (20.0 if is_eth_t else 8.00)
+                trade_risk_d = max(abs(filled_price - sl), default_sl_d) if sl else default_sl_d
+                calc_stage1_tp = round(filled_price + (self.config.scale_out_r * trade_risk_d), 2) if action == "BUY" else round(filled_price - (self.config.scale_out_r * trade_risk_d), 2)
+                calc_stage2_tp = round(filled_price + (self.config.runner_target_2_multiplier * trade_risk_d), 2) if action == "BUY" else round(filled_price - (self.config.runner_target_2_multiplier * trade_risk_d), 2)
+
+                trade_record = {
+                    "ticket": ticket,
+                    "symbol": symbol,
+                    "action": action,
+                    "lots": executed_lots,
+                    "entry_price": filled_price,
+                    "stop_loss": sl,
+                    "target_1": calc_stage1_tp,
+                    "target_2": calc_stage2_tp if self.config.enable_runner_trailing else tp2,
+                    "rr_ratio": rr_t1,
+                    "comment": order_comment,
+                    "status": "OPEN",
+                    "timestamp": now,
+                    "tp1_taken": 0,
+                    "peak_price": filled_price,
+                    "partial_closed_lots": 0.0,
+                    "partial_realized_usd": 0.0,
+                    "initial_stop_loss": sl,
+                    "initial_risk_distance": trade_risk_d,
+                    "initial_lots": executed_lots,
+                    "remaining_lots": executed_lots,
+                    "config_hash": getattr(self, "config_hash", ""),
+                    "git_sha": getattr(self, "git_sha", ""),
+                    "schema_version": getattr(self, "schema_version", "2.0.0"),
+                }
+
+                with self._db_connection() as conn:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO trade_executions
+                        (timestamp, ticket, symbol, action, lots, entry_price, stop_loss, target_1, target_2, rr_ratio, status, comment, tp1_taken, peak_price, partial_closed_lots, partial_realized_usd, initial_stop_loss, initial_risk_distance, initial_lots, remaining_lots, config_hash, git_sha, schema_version)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (now, ticket, symbol, action, executed_lots, filled_price, sl, calc_stage1_tp, calc_stage2_tp if self.config.enable_runner_trailing else tp2, rr_t1, "OPEN", order_comment, 0, filled_price, 0.0, 0.0, sl, trade_risk_d, executed_lots, executed_lots, getattr(self, "config_hash", ""), getattr(self, "git_sha", ""), getattr(self, "schema_version", "2.0.0")),
+                    )
+                    conn.commit()
+
+                self.tracked_positions[ticket] = trade_record
+
+                if self.config.send_telegram_alerts:
+                    setup_alert_mock = {
+                        "symbol": symbol,
+                        "action": action,
+                        "entry_price": filled_price,
+                        "stop_loss": sl,
+                        "target_1": calc_stage1_tp,
+                        "target_2": calc_stage2_tp if self.config.enable_runner_trailing else tp2,
+                        "setup_name": setup_name,
+                        "lots": executed_lots,
+                    }
+                    self.notifier.send_trade_entry(order=order_result, setup=setup_alert_mock)
+
+                return {"status": "SUCCESS", "order_result": order_result, "trade_record": trade_record}
+            else:
+                return {"status": "ERROR", "order_result": order_result, "message": order_result.get("message")}
+        except Exception as e:
+            logger.error("Failed to execute armed order: %s", e)
+            return {"status": "ERROR", "message": str(e)}
 
     def _manage_open_positions(self, open_positions: List[Dict[str, Any]]) -> List[str]:
         """

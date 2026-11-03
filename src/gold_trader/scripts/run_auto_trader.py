@@ -75,6 +75,9 @@ def main():
     parser.add_argument("--db-path", default=None, help="Path to SQLite database file")
     parser.add_argument("--order-tag", default=None, help="Order comment tag for multi-engine isolation (e.g. YieldA)")
     parser.add_argument("--bridge-port", type=int, default=8888, help="TCP port of the MT5 Socket Bridge (default: 8888)")
+    parser.add_argument("--enable-two-tier", action="store_true", default=True, help="Enable Two-Tier 1-second high-velocity tick polling (default: True)")
+    parser.add_argument("--no-two-tier", dest="enable_two_tier", action="store_false", help="Disable Two-Tier polling")
+    parser.add_argument("--micro-interval", type=float, default=1.0, help="Micro polling interval in seconds for Tier 2 (default: 1.0s)")
 
     args = parser.parse_args()
 
@@ -93,6 +96,8 @@ def main():
         scan_interval_seconds=args.interval_seconds,
         active_interval_seconds=args.active_interval_seconds,
         enable_adaptive_dual_speed=args.adaptive_dual_speed,
+        enable_two_tier_polling=args.enable_two_tier,
+        micro_polling_interval_seconds=args.micro_interval,
         auto_execute=not args.dry_run,
         trail_to_breakeven_at_t1=True,
         one_trade_per_bar=args.one_trade_per_bar,
@@ -142,7 +147,7 @@ def main():
     logger.info(f"   Auto Execute: {cfg.auto_execute} | Max Open: {cfg.max_open_positions}")
     logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
     logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (0.5R Dynamic Buffer: {cfg.runner_trail_buffer_r:.2f}R [~${cfg.runner_trail_buffer_usd:.2f}] | T2: {cfg.runner_target_2_multiplier:.2f}R)")
-    logger.info(f"   Polling Cycle: Adaptive Dual-Speed ({cfg.enable_adaptive_dual_speed}) | Idle: {cfg.scan_interval_seconds}s | In-Trade: {cfg.active_interval_seconds}s")
+    logger.info(f"   Polling Cycle: Two-Tier High-Velocity (Tier 1 Macro: {cfg.scan_interval_seconds}s | Tier 2 Micro: {cfg.micro_polling_interval_seconds}s | In-Trade: {cfg.active_interval_seconds}s)")
     logger.info(f"🎯 Execution Sizing: FLAT RISK (Compounding Strategy Removed)")
     logger.info(f"   Capital Baseline: $1,000.00 | Fixed Risk: ${cfg.fixed_risk_usd:.2f} per trade")
     logger.info(f"   Expected Target 1 Gain: +${cfg.fixed_risk_usd * cfg.min_risk_reward:.2f} ({cfg.min_risk_reward:.2f}R)")
@@ -197,7 +202,7 @@ def main():
                 time.sleep(cfg.active_interval_seconds)
             else:
                 in_trade_ticks = 0
-                logger.info(f"\n--- [Cycle #{cycle}] Scanning {cfg.symbol} Market @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} ---")
+                logger.info(f"\n--- [Cycle #{cycle} | Tier 1 Macro Scan] Scanning {cfg.symbol} Market @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} ---")
                 res = trader.evaluate_and_trade()
                 logger.info(f"Price: ${res.get('current_price')} | Trend: {res.get('bias')} | Setup: {res.get('setup_name')} | Score: {res.get('quality_score')}")
                 logger.info(f"Decision: {res.get('decision')}")
@@ -211,6 +216,62 @@ def main():
                 if order_res and order_res.get("status") == "SUCCESS":
                     logger.info(f"🚀 New position entered! Engaging {cfg.active_interval_seconds}-second fast position management loop.")
                     time.sleep(cfg.active_interval_seconds)
+                    continue
+
+                armed_trigger = res.get("armed_trigger")
+                if armed_trigger and getattr(cfg, "enable_two_tier_polling", True):
+                    trig_act = armed_trigger["action"]
+                    trig_px = armed_trigger["trigger_price"]
+                    trig_cond = armed_trigger.get("trigger_condition", "BID_GTE" if trig_act == "BUY" else "ASK_LTE")
+                    ml_p = armed_trigger.get("ml_prob", 0.50)
+                    logger.info(
+                        f"🎯 [Tier 2 Micro Loop Active] Armed {cfg.symbol} {trig_act} trigger @ ${trig_px:.2f} "
+                        f"(Cond: {trig_cond}, ML: {ml_p:.1%}) | Polling live ticks every {cfg.micro_polling_interval_seconds}s..."
+                    )
+
+                    tier2_ticks = 0
+                    max_ticks = max(10, int(cfg.scan_interval_seconds / max(0.5, cfg.micro_polling_interval_seconds)))
+                    triggered = False
+
+                    while tier2_ticks < max_ticks:
+                        time.sleep(cfg.micro_polling_interval_seconds)
+                        tier2_ticks += 1
+
+                        sym_info = trader.broker.get_symbol_info(cfg.symbol)
+                        if not sym_info or sym_info.get("status") != "SUCCESS":
+                            continue
+
+                        bid = float(sym_info.get("bid", 0.0))
+                        ask = float(sym_info.get("ask", 0.0))
+                        if bid <= 0 or ask <= 0:
+                            continue
+
+                        is_hit = False
+                        if trig_cond == "BID_GTE" and bid >= trig_px:
+                            is_hit = True
+                        elif trig_cond == "ASK_LTE" and ask <= trig_px:
+                            is_hit = True
+
+                        if is_hit:
+                            logger.info(
+                                f"⚡ [Tier 2 Trigger Hit @ Tick #{tier2_ticks}] {cfg.symbol} {trig_act} Touch Detected! "
+                                f"Trigger: ${trig_px:.2f} | Live Bid: ${bid:.2f} | Live Ask: ${ask:.2f} | Execution Latency: <{cfg.micro_polling_interval_seconds}s"
+                            )
+                            exec_res = trader.execute_armed_order(armed_trigger, sym_info)
+                            ord_res = exec_res.get("order_result")
+                            if ord_res and ord_res.get("status") == "SUCCESS":
+                                logger.info(
+                                    f"🚀 [Tier 2 Order Executed] Ticket #{ord_res.get('ticket')} @ ${ord_res.get('price')} "
+                                    f"(Lots: {ord_res.get('lots')}, SL: ${ord_res.get('sl')}, TP: ${ord_res.get('tp')})"
+                                )
+                                triggered = True
+                                break
+                            else:
+                                logger.error(f"Tier 2 execution failed: {exec_res.get('message')}")
+                                break
+
+                    if triggered:
+                        time.sleep(cfg.active_interval_seconds)
                 else:
                     time.sleep(cfg.scan_interval_seconds)
         except KeyboardInterrupt:
