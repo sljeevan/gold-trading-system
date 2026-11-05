@@ -30,11 +30,11 @@ exec $PYTHON_BIN -u -m gold_trader.scripts.run_auto_trader \
     --max-daily-trades 6 \
     --no-session-filter \
     --runner-trail-buffer 350.00 \
-    --runner-trail-buffer-r 0.50 \
-    --max-positions 0 \
+    --max-positions 2 \
+    --max-unhedged-positions 1 \
+    --allow-runner-compounding \
     --runner-target-2-multiplier 3.00 \
-    --enable-ml-filter \
-    --ml-min-prob 0.50 \
+    --no-enable-ml-filter \
     --require-slope-alignment \
     --db-path /home/mcpuser/.gold_trading_data/btc_auto_trader.db \
     --loop 2>&1 | tee -a /home/mcpuser/MCP/gold-trading-system/btc_auto_trader.log

@@ -51,7 +51,9 @@ class AutoTraderConfig:
     risk_pct_per_trade: float = 1.0
     min_risk_reward: float = 1.25
     min_quality_score: int = 80
-    max_open_positions: Optional[int] = 0  # 0 or None = uncapped (no artificial exposure ceiling)
+    max_open_positions: Optional[int] = 2  # Max open positions per asset (2 for runner compounding)
+    max_unhedged_positions: Optional[int] = 1  # Max open positions with active unhedged risk (default: 1)
+    allow_runner_compounding: bool = True  # Permit entering new trade once existing trade has locked Break-Even
     max_spread_pips: float = 4.0
     scan_interval_seconds: int = 60
     active_interval_seconds: int = 5
@@ -77,7 +79,7 @@ class AutoTraderConfig:
     scale_out_r: float = 1.00
     enable_runner_trailing: bool = True
     runner_trail_buffer_usd: float = 4.50
-    runner_trail_buffer_r: Optional[float] = 0.50  # Dynamic 0.5R trailing stop buffer
+    runner_trail_buffer_r: Optional[float] = None  # Fixed USD trailing buffer active by default ($4.50 Gold, $350 BTC, $10 ETH)
     runner_target_2_multiplier: float = 3.00
     enable_news_catalyst_guard: bool = True
     news_guard_buffer_minutes: int = 15
@@ -293,6 +295,22 @@ class GoldAutoTrader:
         except Exception as e:
             logger.debug(f"Failed to fetch open positions: {e}")
             return []
+
+    def get_unhedged_open_positions(self) -> List[Dict[str, Any]]:
+        """Fetch open positions matching this trader's symbol that have active downside risk (SL not at Break-Even)."""
+        matching = self.get_matching_open_positions()
+        unhedged = []
+        for p in matching:
+            side = str(p.get("side", "BUY")).upper()
+            open_p = float(p.get("open_price", 0.0))
+            sl = float(p.get("sl", 0.0) or 0.0)
+            if side == "BUY":
+                if sl < open_p or sl == 0.0:
+                    unhedged.append(p)
+            elif side == "SELL":
+                if sl > open_p or sl == 0.0:
+                    unhedged.append(p)
+        return unhedged
 
     def has_open_position(self) -> bool:
         """Check if there is currently an active open position for this trader's symbol family."""
@@ -860,10 +878,32 @@ class GoldAutoTrader:
             if active_exposure >= self.config.max_open_positions:
                 rejection_reasons.append(f"Max active exposure reached ({len(sym_open_positions)} open, {len(sym_pending_orders)} pending >= {self.config.max_open_positions}).")
 
-            # Check if we already have an open position in the same direction
-            same_direction = [p for p in sym_open_positions if p.get("side") == action]
-            if same_direction:
-                rejection_reasons.append(f"Position already open in direction {action} (Ticket #{same_direction[0].get('ticket')}).")
+            # Check if we already have an open position in the same direction (unless runner compounding is enabled)
+            if not self.config.allow_runner_compounding:
+                same_direction = [p for p in sym_open_positions if p.get("side") == action]
+                if same_direction:
+                    rejection_reasons.append(f"Position already open in direction {action} (Ticket #{same_direction[0].get('ticket')}).")
+
+        # Check Unhedged Active Risk Gate (Risk-Free Runner Compounding)
+        if self.config.max_unhedged_positions and self.config.max_unhedged_positions > 0:
+            unhedged_positions = []
+            for p in sym_open_positions:
+                p_side = str(p.get("side", "BUY")).upper()
+                p_open = float(p.get("open_price", 0.0))
+                p_sl = float(p.get("sl", 0.0) or 0.0)
+                # Position is unhedged if stop-loss has not yet been advanced to or beyond entry price
+                if p_side == "BUY":
+                    if p_sl < p_open or p_sl == 0.0:
+                        unhedged_positions.append(p)
+                elif p_side == "SELL":
+                    if p_sl > p_open or p_sl == 0.0:
+                        unhedged_positions.append(p)
+
+            if len(unhedged_positions) >= self.config.max_unhedged_positions:
+                rejection_reasons.append(
+                    f"Unhedged Risk Gate: Active position #{unhedged_positions[0].get('ticket')} has not locked Break-Even yet. "
+                    f"Awaiting Target 1 scale-out before permitting runner compounding."
+                )
 
         # Check Bar Lock (Max 1 trade per candle bar)
         if self.config.one_trade_per_bar and candle_time:

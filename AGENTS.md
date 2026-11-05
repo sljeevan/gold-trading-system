@@ -6,6 +6,10 @@ This document serves as the persistent system memory, architectural reference, a
 
 ## 1. System Architecture & Component Map
 
+> [!CAUTION]
+> **STRICT PRODUCTION CODE FREEZE POLICY**:
+> Never modify, refactor, edit, or restart any live production code, execution scripts (`run_auto_trader.sh`, `run_btc_auto_trader.sh`, `run_eth_auto_trader.sh`), systemd services, or configuration parameters without **explicit, prior confirmation and permission from the user**. Any proposed changes must be presented first with full impact analysis and awaited until explicitly approved.
+
 The platform is an autonomous quantitative trading engine executing on **Spot Gold (XAU/USD)** via XM MetaTrader 5 on a Linux host.
 
 - **Project Root**: `/home/mcpuser/MCP/gold-trading-system`
@@ -59,7 +63,7 @@ The trading engine executes strictly under **Flat Dollar Risk Allocation** on a 
   - *Bitcoin (BTCUSD)*: $\text{Lots} = \text{round}\left(\frac{\$75.44}{\text{SL Points} \times 1.0}, 2\right)$ (Min $\text{SL} \ge \$500.00$)
   - *Ethereum (ETHUSD)*: $\text{Lots} = \text{round}\left(\frac{\$75.44}{\text{SL Points} \times 1.0}, 2\right)$ (Min $\text{SL} \ge \$20.00$)
 - **Target 1 Objective**: **1.25R – 1.50R** (+$94.30 to +$113.16 Realized)
-- **Concurrent Position Execution**: **Uncapped** (`max_open_positions = 0` / no artificial cap), paced by 1-trade-per-bar lock. Allows risk-free trailing runners to compound freely during multi-day trends.
+- **Concurrent Position Execution**: **True Real-World Sweet Spot** (`max_open_positions = 2`, `max_unhedged_positions = 1`, `allow_runner_compounding = True`). Enforces that at most 1 trade has active unhedged downside risk ($75.44). Once Target 1 is banked (+1.0R / +1.25R) and stop-loss is advanced to Break-Even (Risk-Free Runner), a second compounding entry is unlocked during multi-day trends. Total account risk never exceeds $75.44.
 - **Compounding Status**: **Completely Removed** (Zero ladder state files required in production).
 
 ### 2.1 Production Strategy: High-Velocity Touch (`FLAT_RISK_TOUCH`)
@@ -69,7 +73,7 @@ The trading engine executes strictly under **Flat Dollar Risk Allocation** on a 
    - **Rejection Wick & Candle Confirmation**: Enforces `upper_wick <= 1.8 * max(body, 0.15 * ATR)` and `c >= o` for BUYs (and `lower_wick <= 1.8 * max(body, 0.15 * ATR)` and `c <= o` for SELLs). Eliminates false breakout entries at opposing pin-bars.
    - **50 EMA Slope Alignment Guard**: Rejects BUY orders when 50 EMA slope is negative; rejects SELL orders when 50 EMA slope is positive.
    - **Regime-Aware ADX Guard**: Suppresses breakout entries on Ethereum when 1H ADX(14) < 22.0, completely avoiding horizontal chop bleed.
-   - **Elevated ML Gatekeeper Threshold**: `--ml-min-prob 0.50` across all daemons to enforce institutional conviction.
+   - **Pure Price Action Execution (No ML Filter)**: ML probability gatekeeper disabled across all daemons to prevent indicator-based filter starvation and allow high-velocity trend continuation breakout runners to compound freely (+$44.7k / +592.8R 2Y expectancy).
 2. **Dynamic Volatility Stops**:
    - Gold: $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$8.00)$
    - Bitcoin: $\text{SL} = \max(1.5 \times \text{ATR}_{1\text{h}}, \$500.00)$

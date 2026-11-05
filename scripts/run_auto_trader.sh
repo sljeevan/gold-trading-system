@@ -27,11 +27,11 @@ exec $PYTHON_BIN -u -m gold_trader.scripts.run_auto_trader \
     --mode FLAT_RISK_TOUCH \
     --scale-out-r 1.25 \
     --runner-trail-buffer 4.50 \
-    --runner-trail-buffer-r 0.50 \
-    --max-positions 0 \
+    --max-positions 2 \
+    --max-unhedged-positions 1 \
+    --allow-runner-compounding \
     --runner-target-2-multiplier 3.00 \
-    --enable-ml-filter \
-    --ml-min-prob 0.50 \
+    --no-enable-ml-filter \
     --require-slope-alignment \
     --one-trade-per-bar \
     --loss-cooldown-minutes 60 \

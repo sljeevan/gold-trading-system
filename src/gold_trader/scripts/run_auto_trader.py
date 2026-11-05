@@ -46,7 +46,9 @@ def main():
     parser.add_argument("--trend-filter-ema", type=int, default=50, help="Trend filter EMA period (50 or 200, default: 50)")
     parser.add_argument("--trigger-mode", default="TOUCH", choices=["TOUCH", "CLOSE"], help="Trigger mode: TOUCH or CLOSE (default: TOUCH)")
     parser.add_argument("--min-quality", type=int, default=80, help="Minimum setup quality score (0-100)")
-    parser.add_argument("--max-positions", type=int, default=0, help="Max open positions limit (0 for uncapped, default: 0)")
+    parser.add_argument("--max-positions", type=int, default=2, help="Max open positions limit (default: 2)")
+    parser.add_argument("--max-unhedged-positions", type=int, default=1, help="Max open positions with active unhedged risk (default: 1)")
+    parser.add_argument("--allow-runner-compounding", action=argparse.BooleanOptionalAction, default=True, help="Permit entering new trade once existing trade has locked Break-Even")
     parser.add_argument("--dry-run", action="store_true", help="Analyze and evaluate without placing real orders")
     parser.add_argument("--once", action="store_true", help="Run a single evaluation cycle and exit")
     parser.add_argument("--loop", action="store_true", help="Run continuously in a 24/7 monitoring loop")
@@ -60,12 +62,12 @@ def main():
     parser.add_argument("--partial-scale-out-pct", type=float, default=0.50, help="Partial scale-out percentage (default: 0.50)")
     parser.add_argument("--scale-out-r", type=float, default=1.00, help="Target 1 R-multiple for partial scale out (default: 1.00)")
     parser.add_argument("--enable-runner-trailing", action=argparse.BooleanOptionalAction, default=True, help="Enable dynamic runner trailing after Target 1")
-    parser.add_argument("--runner-trail-buffer", type=float, default=4.50, help="Runner trailing buffer in USD (default: 4.50 for Gold, 350.00 for BTC)")
-    parser.add_argument("--runner-trail-buffer-r", type=float, default=0.50, help="Runner trailing stop buffer in R-multiples (default: 0.50R)")
+    parser.add_argument("--runner-trail-buffer", type=float, default=4.50, help="Runner trailing buffer in USD (default: 4.50 for Gold, 350.00 for BTC, 10.00 for ETH)")
+    parser.add_argument("--runner-trail-buffer-r", type=float, default=None, help="Runner trailing stop buffer in R-multiples (default: None for fixed USD buffer)")
     parser.add_argument("--runner-target-2-multiplier", type=float, default=3.00, help="Target 2 extension multiplier (default: 3.00)")
     parser.add_argument("--enable-news-catalyst-guard", action=argparse.BooleanOptionalAction, default=True, help="Pause trades ±15m around high-impact US macro events (CPI, NFP, FOMC)")
     parser.add_argument("--news-guard-buffer-minutes", type=int, default=15, help="Minutes blackout buffer before/after high-impact news (default: 15)")
-    parser.add_argument("--enable-ml-filter", action=argparse.BooleanOptionalAction, default=True, help="Enable Machine Learning win probability filter gate (default: True)")
+    parser.add_argument("--enable-ml-filter", action=argparse.BooleanOptionalAction, default=False, help="Enable Machine Learning win probability filter gate (default: False)")
     parser.add_argument("--ml-min-prob", type=float, default=0.50, help="Minimum win probability threshold for ML filter (default: 0.50)")
     parser.add_argument("--ml-dynamic-sizing", action=argparse.BooleanOptionalAction, default=False, help="Enable dynamic ML confidence-weighted position sizing (default: False)")
     parser.add_argument("--ml-model-path", default=None, help="Custom path to ML model joblib file")
@@ -93,6 +95,8 @@ def main():
         min_risk_reward=args.min_rr,
         min_quality_score=args.min_quality,
         max_open_positions=args.max_positions,
+        max_unhedged_positions=args.max_unhedged_positions,
+        allow_runner_compounding=args.allow_runner_compounding,
         scan_interval_seconds=args.interval_seconds,
         active_interval_seconds=args.active_interval_seconds,
         enable_adaptive_dual_speed=args.adaptive_dual_speed,
@@ -146,7 +150,8 @@ def main():
     logger.info(f"   Regime Safeguards: ADX Filter: {cfg.adx_min_threshold} | 50 EMA Slope Alignment: {cfg.require_slope_alignment}")
     logger.info(f"   Auto Execute: {cfg.auto_execute} | Max Open: {cfg.max_open_positions}")
     logger.info(f"   Partial Scale-Out: {cfg.enable_partial_scale_out} ({int(cfg.partial_scale_out_pct*100)}% @ {cfg.scale_out_r:.2f}R)")
-    logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (0.5R Dynamic Buffer: {cfg.runner_trail_buffer_r:.2f}R [~${cfg.runner_trail_buffer_usd:.2f}] | T2: {cfg.runner_target_2_multiplier:.2f}R)")
+    trail_desc = f"{cfg.runner_trail_buffer_r:.2f}R Dynamic" if cfg.runner_trail_buffer_r is not None else f"${cfg.runner_trail_buffer_usd:.2f} Fixed"
+    logger.info(f"   Runner Trailing: {cfg.enable_runner_trailing} (Buffer: {trail_desc} | T2: {cfg.runner_target_2_multiplier:.2f}R)")
     logger.info(f"   Polling Cycle: Two-Tier High-Velocity (Tier 1 Macro: {cfg.scan_interval_seconds}s | Tier 2 Micro: {cfg.micro_polling_interval_seconds}s | In-Trade: {cfg.active_interval_seconds}s)")
     logger.info(f"🎯 Execution Sizing: FLAT RISK (Compounding Strategy Removed)")
     logger.info(f"   Capital Baseline: $1,000.00 | Fixed Risk: ${cfg.fixed_risk_usd:.2f} per trade")
@@ -198,6 +203,24 @@ def main():
                     in_trade_ticks = 0
                     time.sleep(cfg.active_interval_seconds)
                     continue
+
+                # Runner Compounding Macro Scan:
+                # If active positions have zero downside risk (SL at Break-Even) and exposure < max_open_positions,
+                # evaluate the market for the next compounding entry setup on periodic macro interval.
+                macro_interval_ticks = max(1, cfg.scan_interval_seconds // cfg.active_interval_seconds)
+                if (
+                    cfg.allow_runner_compounding
+                    and (in_trade_ticks % macro_interval_ticks == 0)
+                    and (cfg.max_open_positions == 0 or len(matching_positions) < cfg.max_open_positions)
+                ):
+                    unhedged = trader.get_unhedged_open_positions()
+                    if len(unhedged) == 0:
+                        logger.info(f"\n--- [Cycle #{cycle} | Runner Compounding Macro Scan] All active positions are Risk-Free Runners! Scanning {cfg.symbol} for next entry ---")
+                        scan_res = trader.evaluate_and_trade()
+                        logger.info(f"Runner Compounding Decision: {scan_res.get('decision')} | Price: ${scan_res.get('current_price')} | Score: {scan_res.get('quality_score')}")
+                        if scan_res.get("order_result"):
+                            logger.info(f"⚡ RUNNER COMPOUNDING ORDER EVENT: {scan_res.get('order_result')}")
+                        cycle += 1
 
                 time.sleep(cfg.active_interval_seconds)
             else:
